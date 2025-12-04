@@ -196,39 +196,83 @@ func readNextAnnexBFrame(br *bufio.Reader) ([]byte, error) {
 	nalCount := 0
 
 	for {
-		// Look for start code: 00 00 01 or 00 00 00 01
-		startCode, err := findStartCode(br)
-		if err != nil {
-			if len(frame) > 0 {
-				return frame, nil // Return accumulated frame
+		// 1. Skip garbage until we find a start code (PEEK only)
+		startCodeLen := 0
+		for {
+			// Peek enough bytes to detect 00 00 00 01
+			peek, err := br.Peek(4)
+			if err != nil && err != io.EOF {
+				return frame, err
 			}
-			return nil, err
+			if len(peek) < 3 {
+				// Not enough data to determine start code, wait for more or EOF
+				if err == io.EOF {
+					return frame, nil // End of stream
+				}
+				// Should not happen if err != EOF
+				return frame, io.ErrUnexpectedEOF
+			}
+
+			if peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
+				startCodeLen = 3
+				break
+			}
+			if len(peek) >= 4 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x00 && peek[3] == 0x01 {
+				startCodeLen = 4
+				break
+			}
+
+			// Not a start code, consume one byte (garbage)
+			b, err := br.ReadByte()
+			if err != nil {
+				return frame, err
+			}
+			// Only append garbage if we are inside a frame?
+			// Usually garbage between frames is ignored.
+			// But if we are in the middle of a frame (nalCount > 0), we shouldn't have garbage between NALs ideally.
+			// For safety, we ignore garbage between NALs.
+			_ = b
 		}
 
-		// Read NAL unit header (1 byte after start code)
-		nalHeader, err := br.ReadByte()
+		// 2. We found a start code at current position. Check NAL type.
+		// We need to peek the byte AFTER the start code.
+		peekHeader, err := br.Peek(startCodeLen + 1)
 		if err != nil {
 			return frame, err
 		}
-
+		nalHeader := peekHeader[startCodeLen]
 		nalType := nalHeader & 0x1F
 
-		// Start new frame or continue current?
+		// DEBUG LOGGING
+		// log.Printf("Found NAL: Type=%d, StartCodeLen=%d, CurrentFrameLen=%d", nalType, startCodeLen, len(frame))
+
+		// 3. Check if this NAL starts a new frame
 		// IDR (5) or Non-IDR (1) = new frame if we already have NALs
 		if (nalType == 5 || nalType == 1) && nalCount > 0 {
-			// Unread the start code and NAL header for next read
-			for i := len(startCode) - 1; i >= 0; i-- {
-				br.UnreadByte()
-			}
-			br.UnreadByte()
+			// log.Printf("New frame detected (Type %d), returning accumulated frame with %d NALs", nalType, nalCount)
+			// We found the start of the NEXT frame.
+			// Return what we have so far. We leave the start code in the buffer.
 			return frame, nil
 		}
 
-		// Add start code + NAL header to frame
-		frame = append(frame, startCode...)
+		// 4. Consume start code and NAL header
+		discarded, err := br.Discard(startCodeLen + 1)
+		if err != nil {
+			return frame, err
+		}
+		if discarded != startCodeLen+1 {
+			return frame, io.ErrUnexpectedEOF
+		}
+
+		// Append to frame
+		if startCodeLen == 3 {
+			frame = append(frame, 0x00, 0x00, 0x01)
+		} else {
+			frame = append(frame, 0x00, 0x00, 0x00, 0x01)
+		}
 		frame = append(frame, nalHeader)
 
-		// Read rest of NAL until next start code
+		// 5. Read rest of NAL until next start code
 		nalData, err := readUntilStartCode(br)
 		if err != nil && err != io.EOF {
 			return nil, err
@@ -236,74 +280,51 @@ func readNextAnnexBFrame(br *bufio.Reader) ([]byte, error) {
 		frame = append(frame, nalData...)
 		nalCount++
 
+		// log.Printf("Appended NAL Type %d, Size %d. Total Frame Size: %d", nalType, len(nalData), len(frame))
+
 		if err == io.EOF {
 			return frame, nil
 		}
 	}
 }
 
-// findStartCode finds next Annex-B start code (00 00 01 or 00 00 00 01)
-func findStartCode(br *bufio.Reader) ([]byte, error) {
-	for {
-		b, err := br.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-
-		if b != 0x00 {
-			continue
-		}
-
-		// Peek next bytes
-		peek, err := br.Peek(3)
-		if err != nil && err != io.EOF {
-			return nil, err
-		}
-
-		if len(peek) >= 2 && peek[0] == 0x00 && peek[1] == 0x01 {
-			// Found 00 00 01
-			br.Discard(2)
-			return []byte{0x00, 0x00, 0x01}, nil
-		}
-
-		if len(peek) >= 3 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
-			// Found 00 00 00 01
-			br.Discard(3)
-			return []byte{0x00, 0x00, 0x00, 0x01}, nil
-		}
-	}
-}
+// findStartCode is no longer used by readNextAnnexBFrame but kept if needed or we can remove it.
+// Since I am replacing the block, I will remove it to avoid dead code if it's not used elsewhere.
+// Checking file... findStartCode was only used in readNextAnnexBFrame.
 
 // readUntilStartCode reads until next start code (not including it)
 func readUntilStartCode(br *bufio.Reader) ([]byte, error) {
 	var data []byte
 
 	for {
+		// Peek to see if we are at a start code
+		peek, err := br.Peek(4)
+		// If we have fewer than 3 bytes, we can't be at a start code yet (unless EOF)
+		if len(peek) >= 3 {
+			if peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
+				return data, nil
+			}
+			if len(peek) >= 4 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x00 && peek[3] == 0x01 {
+				return data, nil
+			}
+		}
+
+		if err == io.EOF {
+			// If EOF, we return what we have
+			// But wait, if we have 00 00 at the end, and then EOF?
+			// It's not a start code. So we consume it.
+			// But Peek returns EOF if it can't fill the buffer.
+			// We should read the available bytes.
+		} else if err != nil {
+			return data, err
+		}
+
+		// Not a start code, read one byte
 		b, err := br.ReadByte()
 		if err != nil {
 			return data, err
 		}
-
 		data = append(data, b)
-
-		// Check if we're at start of a start code
-		if b == 0x00 && len(data) >= 3 {
-			tail := data[len(data)-3:]
-			if tail[0] == 0x00 && tail[1] == 0x00 {
-				// Peek next byte
-				next, err := br.Peek(1)
-				if err == nil && len(next) > 0 && (next[0] == 0x01 || next[0] == 0x00) {
-					// Unread the 00 00 we just read (part of start code)
-					br.UnreadByte()
-					data = data[:len(data)-1]
-					if len(data) > 0 && data[len(data)-1] == 0x00 {
-						br.UnreadByte()
-						data = data[:len(data)-1]
-					}
-					return data, nil
-				}
-			}
-		}
 	}
 }
 
