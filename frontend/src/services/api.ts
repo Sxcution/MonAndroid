@@ -1,10 +1,10 @@
 import axios from 'axios';
-import { API_BASE_URL, ROUTES } from '@/utils/constants';
+import { API_BASE_URL, API_ENDPOINTS } from '@/utils/constants';
 import { Device } from '@/types/device';
-import { ActionRequest, Action } from '@/types/action';
+import { Action, ActionRequest } from '@/types/action';
 import { APIResponse } from '@/types/api';
 
-// Create axios instance
+// Create axios instance with base configuration
 const apiClient = axios.create({
     baseURL: API_BASE_URL,
     timeout: 10000,
@@ -28,31 +28,16 @@ export const deviceAPI = {
      * Get all devices
      */
     async getDevices(): Promise<Device[]> {
-        const response = await apiClient.get<APIResponse<Device[]>>(ROUTES.DEVICES);
+        const response = await apiClient.get<APIResponse<Device[]>>(API_ENDPOINTS.DEVICES);
         return response.data.data || [];
-    },
-
-    /**
-     * Get device by ID
-     */
-    async getDevice(id: string): Promise<Device> {
-        const response = await apiClient.get<APIResponse<Device>>(ROUTES.DEVICE_DETAIL(id));
-        return response.data.data!;
     },
 
     /**
      * Scan for new devices
      */
     async scanDevices(): Promise<Device[]> {
-        const response = await apiClient.post<APIResponse<Device[]>>(ROUTES.DEVICES + '/scan');
+        const response = await apiClient.post<APIResponse<Device[]>>(API_ENDPOINTS.DEVICES_SCAN);
         return response.data.data || [];
-    },
-
-    /**
-     * Remove device
-     */
-    async removeDevice(id: string): Promise<void> {
-        await apiClient.delete(ROUTES.DEVICE_DETAIL(id));
     },
 };
 
@@ -62,7 +47,7 @@ export const actionAPI = {
      * Execute action on single device
      */
     async executeAction(deviceId: string, action: ActionRequest['action']): Promise<Action> {
-        const response = await apiClient.post<APIResponse<Action>>(ROUTES.ACTIONS, {
+        const response = await apiClient.post<APIResponse<Action>>(API_ENDPOINTS.ACTIONS, {
             device_id: deviceId,
             action,
         });
@@ -73,19 +58,11 @@ export const actionAPI = {
      * Execute batch action on multiple devices
      */
     async executeBatchAction(deviceIds: string[], action: ActionRequest['action']): Promise<Action[]> {
-        const response = await apiClient.post<APIResponse<Action[]>>(ROUTES.ACTIONS_BATCH, {
+        const response = await apiClient.post<APIResponse<Action[]>>(API_ENDPOINTS.ACTIONS_BATCH, {
             device_ids: deviceIds,
             action,
         });
         return response.data.data || [];
-    },
-
-    /**
-     * Get action status
-     */
-    async getActionStatus(actionId: string): Promise<Action> {
-        const response = await apiClient.get<APIResponse<Action>>(ROUTES.ACTION_DETAIL(actionId));
-        return response.data.data!;
     },
 };
 

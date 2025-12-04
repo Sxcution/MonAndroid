@@ -1,3 +1,19 @@
+// API Configuration
+export const API_BASE_URL = 'http://localhost:8080/api';
+export const WS_URL = 'ws://localhost:8080/ws';
+
+// API Endpoints
+export const API_ENDPOINTS = {
+    DEVICES: '/devices',
+    DEVICES_SCAN: '/devices/scan',
+    ACTIONS: '/actions',
+    ACTIONS_BATCH: '/actions/batch',
+    STREAMING_START: '/streaming/start',
+    STREAMING_STOP: '/streaming/stop',
+    STREAMING_START_ALL: '/streaming/start-all',
+    STREAMING_STOP_ALL: '/streaming/stop-all',
+    STREAMING_STATUS: '/streaming/status',
+} as const;
 
 export const ACTION_TYPES = {
     TAP: 'tap',
