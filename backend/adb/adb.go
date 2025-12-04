@@ -219,11 +219,13 @@ func (c *ADBClient) StartH264Stream(deviceID string) (io.ReadCloser, *exec.Cmd, 
 	size := getEnv("H264_SIZE", "1280x720")      // 720p default
 
 	// Build screenrecord command with H.264 output
+	// Thêm --verbose để debug nếu cần
 	cmd := exec.Command(c.ADBPath, "-s", deviceID, "exec-out",
 		"screenrecord",
 		"--output-format=h264",
 		"--bit-rate="+bitrate,
 		"--size="+size,
+		"--verbose", // Để debug nếu cần
 		"-") // stdout
 
 	// Get stdout pipe for streaming
