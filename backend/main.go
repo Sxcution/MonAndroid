@@ -32,6 +32,16 @@ func main() {
 	log.Println("WebSocket server on ws://localhost:8080/ws")
 	log.Println("Ready to stream screens @ 30 FPS")
 
+	// Auto-start streaming for all devices in background
+	go func() {
+		log.Println("🚀 Auto-starting H.264 streaming for all devices...")
+		if err := streamingService.StartAllStreaming(); err != nil {
+			log.Printf("Warning: Failed to auto-start streaming: %v", err)
+		} else {
+			log.Println("✅ Auto-streaming started successfully")
+		}
+	}()
+
 	if err := router.Run(":8080"); err != nil {
 		log.Fatal("Failed to start server:", err)
 	}

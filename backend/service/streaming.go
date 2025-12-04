@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -52,10 +51,10 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 
 	log.Printf("🚀 StartStreaming called for %s", deviceID)
 
-	// Check if already streaming - if yes, just return success (idempotent)
+	// Check if already streaming
 	if stream, exists := s.streams[deviceID]; exists && stream.isStreaming {
 		log.Printf("Device %s is already streaming, returning success", deviceID)
-		return nil // Return success instead of error for idempotency
+		return nil
 	}
 
 	// Get device info
@@ -83,7 +82,7 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 		deviceADBID: device.ADBDeviceID,
 		isStreaming: true,
 		stopChan:    make(chan bool),
-		fps:         30, // Target 30 FPS
+		fps:         30,
 		h264Cmd:     cmd,
 	}
 
@@ -122,210 +121,136 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 	return nil
 }
 
-// consumeH264 reads H.264 stream, parses NAL units, and broadcasts frames
+// consumeH264 reads raw H.264 stream and broadcasts NAL units
+// Uses buffer accumulation strategy to avoid any byte loss
 func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	defer r.Close()
 	defer func() {
-		// Clean up stream on exit
 		fmt.Printf("H.264 consumer exiting for device %s\n", deviceID)
 		s.StopStreaming(deviceID)
 	}()
 
-	fmt.Printf("🎬 H.264 consumer started for device %s\n", deviceID)
+	fmt.Printf("🎬 H.264 consumer started for device %s (Buffer Strategy)\n", deviceID)
 
-	br := bufio.NewReaderSize(r, 1<<20) // 1MB buffer
+	// Buffer chứa dữ liệu tích lũy
+	accBuf := make([]byte, 0, 1024*1024)
+
+	// Buffer tạm để đọc từ stream
+	readBuf := make([]byte, 4096)
+
 	frameCount := 0
 
-	fmt.Printf("⏳ Waiting for first byte from %s...\n", deviceID)
-	firstByte, err := br.Peek(1)
-	if err != nil {
-		fmt.Printf("❌ Failed to peek first byte for %s: %v\n", deviceID, err)
-		return
-	}
-	fmt.Printf("✅ Received first byte: %x\n", firstByte)
-
 	for {
-		// Read next Annex-B frame (bundle of NALs until next keyframe/P-frame)
-		frame, err := readNextAnnexBFrame(br)
+		// 1. Đọc dữ liệu mới từ stream
+		n, err := r.Read(readBuf)
+		if n > 0 {
+			accBuf = append(accBuf, readBuf[:n]...)
+		}
+
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Error reading H.264 frame for %s: %v", deviceID, err)
-			} else {
-				log.Printf("EOF reading H.264 frame for %s", deviceID)
+				log.Printf("Error reading H.264 stream for %s: %v", deviceID, err)
 			}
 			return
 		}
 
-		if len(frame) == 0 {
-			continue
-		}
-
-		frameCount++
-
-		// Prefix frame with 4-byte big-endian length
-		pkt := make([]byte, 4+len(frame))
-		binary.BigEndian.PutUint32(pkt[:4], uint32(len(frame)))
-		copy(pkt[4:], frame)
-
-		// Broadcast to WebSocket with backpressure handling
-		s.wsHub.BroadcastToDevice(deviceID, pkt)
-
-		// Log every 30 frames (~1 second at 30 FPS)
-		if frameCount < 5 {
-			fmt.Printf("📦 Sent frame %d: %d bytes (Hex: %x...)\n", frameCount, len(frame), frame[:min(len(frame), 20)])
-		} else if frameCount%30 == 0 {
-			fmt.Printf("📺 Device %s: Frame %d\n", deviceID, frameCount)
-		}
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// readNextAnnexBFrame reads NAL units from Annex-B stream until complete frame
-func readNextAnnexBFrame(br *bufio.Reader) ([]byte, error) {
-	var frame []byte
-	nalCount := 0
-	hasVideoFrame := false // Track if we've seen IDR(5) or Slice(1) in current frame
-
-	for {
-		// 1. Tìm start code của NAL unit hiện tại (không consume bytes nếu chưa chắc)
-		// Start code: 00 00 01 (3 bytes) hoặc 00 00 00 01 (4 bytes)
-		startCodeLen, err := peekStartCode(br)
-		if err != nil {
-			if len(frame) > 0 && err == io.EOF {
-				return frame, nil
-			}
-			return nil, err
-		}
-
-		// Nếu không tìm thấy start code ngay đầu buffer -> data rác hoặc lỗi stream -> skip 1 byte rồi thử lại
-		if startCodeLen == 0 {
-			b, err := br.ReadByte()
-			if err != nil {
-				return nil, err
-			}
-			// Chỉ append vào frame nếu đang ở giữa frame (đã có NAL trước đó)
-			if nalCount > 0 {
-				frame = append(frame, b)
-			}
-			continue
-		}
-
-		// 2. Đọc Start Code + NAL Header
-		// Peek NAL Header trước để check loại (TRƯỚC KHI consume start code)
-		peekBuf, err := br.Peek(startCodeLen + 1)
-		if err != nil {
-			if len(frame) > 0 && err == io.EOF {
-				return frame, nil
-			}
-			return nil, err
-		}
-		nalHeader := peekBuf[startCodeLen]
-		nalType := nalHeader & 0x1F
-
-		// 3. Check nếu đây là video frame MỚI (IDR/Slice) và ta đã có video frame trước đó -> Return
-		isVideoFrame := (nalType == 1 || nalType == 5)
-		if isVideoFrame && hasVideoFrame {
-			// Đã có video frame rồi, gặp video frame mới -> Kết thúc frame hiện tại
-			return frame, nil
-		}
-
-		// 4. Consume start code
-		startCode := make([]byte, startCodeLen)
-		if _, err := io.ReadFull(br, startCode); err != nil {
-			return nil, err
-		}
-
-		// Consume NAL header
-		headerByte, err := br.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-
-		// Append start code + header vào frame
-		frame = append(frame, startCode...)
-		frame = append(frame, headerByte)
-
-		// 5. Đọc phần data còn lại của NAL cho đến khi gặp Start Code tiếp theo
+		// 2. Xử lý cắt NAL Unit từ accBuf
 		for {
-			// Peek 3-4 bytes để xem có phải start code mới không
-			nextScLen, _ := peekStartCode(br)
-			if nextScLen > 0 {
-				// Tìm thấy start code mới -> Kết thúc NAL unit này
+			// Tìm Start Code đầu tiên
+			startIdx := findStartCodeIndex(accBuf)
+			if startIdx == -1 {
+				// Không có start code -> Chờ đọc thêm
+				if len(accBuf) > 100000 {
+					accBuf = accBuf[:0]
+				}
 				break
 			}
 
-			// Không phải start code, đọc 1 byte data
-			b, err := br.ReadByte()
-			if err != nil {
-				if err == io.EOF {
-					break
+			// Nếu start code không nằm ở đầu, vứt bỏ phần rác
+			if startIdx > 0 {
+				accBuf = accBuf[startIdx:]
+				startIdx = 0
+			}
+
+			// Tìm Start Code THỨ HAI
+			nextStartIdx := -1
+			if len(accBuf) > 4 {
+				idx := findStartCodeIndex(accBuf[3:])
+				if idx != -1 {
+					nextStartIdx = idx + 3
 				}
-				return nil, err
 			}
-			frame = append(frame, b)
-		}
 
-		nalCount++
+			if nextStartIdx != -1 {
+				// ✅ Tìm thấy 1 NAL trọn vẹn
+				nalData := make([]byte, nextStartIdx)
+				copy(nalData, accBuf[:nextStartIdx])
 
-		// DEBUG: Log NAL type
-		log.Printf("📝 NAL #%d: Type=%d, Size=%d bytes total, hasVideoFrame=%v", nalCount, nalType, len(frame), hasVideoFrame)
+				// Gửi NAL này đi
+				s.broadcastNAL(deviceID, nalData, &frameCount)
 
-		// Mark if we just read a video frame
-		if isVideoFrame {
-			hasVideoFrame = true
-			log.Printf("✅ Marked hasVideoFrame=true after NAL type %d", nalType)
-		}
+				// ✂️ Cắt buffer
+				leftover := accBuf[nextStartIdx:]
+				newBuf := make([]byte, len(leftover), cap(accBuf))
+				copy(newBuf, leftover)
+				accBuf = newBuf
 
-		// 6. Check nếu hết stream HOẶC nếu có NAL tiếp theo
-		nextScLen, err := peekStartCode(br)
-		if err == io.EOF || nextScLen == 0 {
-			// Hết stream hoặc buffer tạm thời trống
-			if hasVideoFrame {
-				// Đã có video frame (IDR/Slice) rồi -> Đủ để return
-				log.Printf("🔚 No more NAL units, returning complete frame with %d NAL(s), total %d bytes", nalCount, len(frame))
-				return frame, nil
+				continue
+			} else {
+				// Chưa đủ data -> Break để đọc thêm
+				break
 			}
-			// Chưa có video frame -> Đây chỉ là SPS/PPS, cần đợi thêm data
-			log.Printf("⏸ Buffer empty but no video frame yet (nalCount=%d), waiting for more data...", nalCount)
-			// Đợi một chút để buffer fill
-			_, err := br.Peek(1)
-			if err == io.EOF {
-				// Thực sự hết stream luôn
-				if len(frame) > 0 {
-					log.Printf("⚠️ EOF reached with incomplete frame (%d bytes), returning anyway", len(frame))
-					return frame, nil
-				}
-				return nil, io.EOF
-			}
-			// Có data mới rồi, continue loop để đọc NAL tiếp theo
-			continue
 		}
 	}
 }
 
-// Helper: Kiểm tra xem bytes tiếp theo có phải Start Code không.
-// Trả về độ dài start code (3 hoặc 4), hoặc 0 nếu không phải.
-func peekStartCode(br *bufio.Reader) (int, error) {
-	// Start code có thể là 00 00 01 hoặc 00 00 00 01
-	// Cần peek tối đa 4 bytes
-	buf, err := br.Peek(4)
-	if err != nil && err != io.EOF {
-		return 0, err
+// broadcastNAL sends a single NAL unit to WebSocket
+func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCount *int) {
+	if len(nalData) == 0 {
+		return
 	}
 
-	if len(buf) >= 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 1 {
-		return 3, nil
+	*frameCount++
+
+	// Prefix length (4 bytes)
+	pkt := make([]byte, 4+len(nalData))
+	binary.BigEndian.PutUint32(pkt[:4], uint32(len(nalData)))
+	copy(pkt[4:], nalData)
+
+	// Broadcast
+	s.wsHub.BroadcastToDevice(deviceID, pkt)
+
+	// Log cho SPS/PPS để debug
+	nalType := nalData[3] & 0x1F
+	if len(nalData) > 4 && nalData[2] == 0 && nalData[3] == 1 { // Start code 00 00 00 01
+		nalType = nalData[4] & 0x1F
+	} else if len(nalData) > 3 && nalData[2] == 1 { // Start code 00 00 01
+		nalType = nalData[3] & 0x1F
 	}
-	if len(buf) >= 4 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1 {
-		return 4, nil
+
+	if nalType == 7 {
+		fmt.Printf("📦 Device %s: Sent SPS (seq %d)\n", deviceID, *frameCount)
+	} else if nalType == 8 {
+		fmt.Printf("📦 Device %s: Sent PPS (seq %d)\n", deviceID, *frameCount)
+	} else if *frameCount%30 == 0 {
+		fmt.Printf("📺 Device %s: NAL seq %d\n", deviceID, *frameCount)
 	}
-	return 0, nil
+}
+
+// findStartCodeIndex tìm vị trí xuất hiện đầu tiên của 00 00 01 hoặc 00 00 00 01
+func findStartCodeIndex(data []byte) int {
+	n := len(data)
+	for i := 0; i < n-2; i++ {
+		// Check 00 00 01
+		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			// Kiểm tra xem trước đó có 00 nữa không (thành 00 00 00 01)
+			if i > 0 && data[i-1] == 0 {
+				return i - 1 // Start code 4 bytes
+			}
+			return i // Start code 3 bytes
+		}
+	}
+	return -1
 }
 
 // StartAllStreaming starts streaming for all online devices

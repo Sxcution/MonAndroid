@@ -123,59 +123,68 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         };
     }, []);
 
-    // Handle WebSocket messages (H.264 binary frames)
+    // Handle WebSocket messages (H.264 binary NAL units)
     useEffect(() => {
         if (!lastMessage || !decoderRef.current) return;
 
-        // Binary H.264 frame
+        // Binary H.264 NAL unit
         if (lastMessage instanceof ArrayBuffer) {
             const buf = new Uint8Array(lastMessage);
 
-            // Parse length-prefix: [4 bytes big-endian][frame data]
+            // Parse length-prefix: [4 bytes big-endian][NAL data]
             if (buf.byteLength < 4) return;
 
             const len = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
             if (len <= 0 || 4 + len > buf.byteLength) {
-                console.warn('⚠️ Invalid frame length:', len, 'total:', buf.byteLength);
+                console.warn('⚠️ Invalid NAL length:', len, 'total:', buf.byteLength);
                 return;
             }
 
-            const frame = buf.subarray(4, 4 + len);
-            console.log(`📦 Received frame: ${len} bytes`);
+            const nalUnit = buf.subarray(4, 4 + len);
+            console.log(`📦 Received NAL unit: ${len} bytes`);
             const decoder = decoderRef.current;
 
-            // Extract SPS/PPS if decoder not configured yet
-            if (decoder.state === 'unconfigured') {
-                const { sps, pps } = extractSPSPPS(frame);
+            // Extract NAL type from this individual NAL unit
+            const nalType = getNALType(nalUnit);
 
-                if (sps) spsRef.current = sps;
-                if (pps) ppsRef.current = pps;
+            // Handle SPS (type 7)
+            if (nalType === 7) {
+                console.log('🔍 Found SPS NAL (type 7)');
+                spsRef.current = nalUnit;
+            }
+            // Handle PPS (type 8)
+            else if (nalType === 8) {
+                console.log('🔍 Found PPS NAL (type 8)');
+                ppsRef.current = nalUnit;
+            }
 
-                if (spsRef.current && ppsRef.current) {
-                    // Create description from SPS+PPS
-                    const sps = spsRef.current;
-                    const pps = ppsRef.current;
-                    const description = new Uint8Array(sps.length + pps.length);
-                    description.set(sps, 0);
-                    description.set(pps, sps.length);
+            // Configure decoder if we have both SPS and PPS
+            if (decoder.state === 'unconfigured' && spsRef.current && ppsRef.current) {
+                console.log('✅ Configuring decoder with SPS and PPS');
+                const sps = spsRef.current;
+                const pps = ppsRef.current;
+                const description = new Uint8Array(sps.length + pps.length);
+                description.set(sps, 0);
+                description.set(pps, sps.length);
 
-                    decoder.configure({
-                        codec: 'avc1.42E01E',
-                        optimizeForLatency: true,
-                        description: description,
-                    });
-                    console.log('✅ Decoder configured with SPS/PPS', {
-                        spsLen: sps.length,
-                        ppsLen: pps.length
-                    });
-                } else {
-                    // Wait for both SPS and PPS
-                    return;
-                }
+                decoder.configure({
+                    codec: 'avc1.42E01E',
+                    optimizeForLatency: true,
+                    description: description,
+                });
+                console.log('✅ Decoder configured successfully!', {
+                    spsLen: sps.length,
+                    ppsLen: pps.length
+                });
             }
 
             // Skip if decoder not ready
             if (decoder.state !== 'configured') return;
+
+            // Only decode video frames (IDR type 5 or Slice type 1)
+            if (nalType !== 5 && nalType !== 1) return;
+
+            console.log(`🎬 Decoding frame (NAL type ${nalType})`);
 
             // Backpressure: skip frame if decoder queue is full
             if (decoder.decodeQueueSize > 4) {
@@ -183,13 +192,13 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             }
 
             // Detect IDR frame (key frame)
-            const type: 'key' | 'delta' = isIDRAnnexB(frame) ? 'key' : 'delta';
+            const type: 'key' | 'delta' = nalType === 5 ? 'key' : 'delta';
 
             try {
                 const chunk = new EncodedVideoChunk({
                     type,
                     timestamp: performance.now() * 1000, // microseconds
-                    data: frame
+                    data: nalUnit
                 });
                 decoder.decode(chunk);
             } catch (error) {
@@ -289,68 +298,21 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     );
 };
 
-// Helper: Extract SPS (NAL type 7) and PPS (NAL type 8) from Annex-B frame
-function extractSPSPPS(u8: Uint8Array): { sps: Uint8Array | null; pps: Uint8Array | null } {
-    let sps: Uint8Array | null = null;
-    let pps: Uint8Array | null = null;
-
-    let i = 0;
-    while (i < u8.length - 4) {
-        // Find start code
-        const sc3 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 1;
-        const sc4 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 0 && u8[i + 3] === 1;
-
-        if (!sc3 && !sc4) {
-            i++;
-            continue;
-        }
-
-        const nalStart = i + (sc3 ? 3 : 4);
-        if (nalStart >= u8.length) break;
-
-        const nalType = u8[nalStart] & 0x1F;
-
-        // Find next start code to get NAL length
-        let nalEnd = nalStart + 1;
-        while (nalEnd < u8.length - 3) {
-            if ((u8[nalEnd] === 0 && u8[nalEnd + 1] === 0 && u8[nalEnd + 2] === 1) ||
-                (u8[nalEnd] === 0 && u8[nalEnd + 1] === 0 && u8[nalEnd + 2] === 0 && u8[nalEnd + 3] === 1)) {
-                break;
-            }
-            nalEnd++;
-        }
-        if (nalEnd >= u8.length) nalEnd = u8.length;
-
-        // Extract SPS (type 7) or PPS (type 8)
-        if (nalType === 7 && !sps) {
-            console.log('🔍 Found SPS NAL unit');
-            sps = u8.slice(i, nalEnd); // Include start code
-        } else if (nalType === 8 && !pps) {
-            console.log('🔍 Found PPS NAL unit');
-            pps = u8.slice(i, nalEnd); // Include start code
-        }
-
-        // Stop if we have both
-        if (sps && pps) break;
-
-        i = nalEnd;
-    }
-
-    return { sps, pps };
-}
-
-// Helper: Check if Annex-B frame contains IDR NAL (type 5)
-function isIDRAnnexB(u8: Uint8Array): boolean {
-    for (let i = 0; i + 4 < u8.length; i++) {
-        const sc3 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 1;
-        const sc4 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 0 && u8[i + 3] === 1;
-        if (sc3 || sc4) {
-            const off = i + (sc3 ? 3 : 4);
-            if (off < u8.length) {
-                const nal = u8[off] & 0x1F;
-                if (nal === 5) return true; // IDR
-            }
+// Helper: Get NAL type from an individual NAL unit
+function getNALType(nalUnit: Uint8Array): number {
+    // Find start code
+    let offset = 0;
+    if (nalUnit.length >= 4 && nalUnit[0] === 0 && nalUnit[1] === 0) {
+        if (nalUnit[2] === 1) {
+            offset = 3; // 00 00 01
+        } else if (nalUnit[2] === 0 && nalUnit[3] === 1) {
+            offset = 4; // 00 00 00 01
         }
     }
-    return false;
+
+    if (offset > 0 && offset < nalUnit.length) {
+        return nalUnit[offset] & 0x1F;
+    }
+
+    return -1; // Invalid
 }
