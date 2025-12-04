@@ -122,6 +122,7 @@ func (c *ADBClient) getProperty(deviceID, property string) (string, error) {
 }
 
 // getScreenResolution gets the device screen resolution
+// Prioritizes "Override size" if set, otherwise uses "Physical size"
 func (c *ADBClient) getScreenResolution(deviceID string) (string, error) {
 	cmd := exec.Command(c.ADBPath, "-s", deviceID, "shell", "wm", "size")
 	output, err := cmd.Output()
@@ -129,13 +130,34 @@ func (c *ADBClient) getScreenResolution(deviceID string) (string, error) {
 		return "", err
 	}
 
-	// Output format: "Physical size: 1080x1920"
-	result := strings.TrimSpace(string(output))
-	if strings.Contains(result, ":") {
-		parts := strings.Split(result, ":")
-		if len(parts) >= 2 {
-			return strings.TrimSpace(parts[1]), nil
+	outputStr := string(output)
+	lines := strings.Split(outputStr, "\n")
+	
+	var physicalSize string
+	var overrideSize string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Physical size:") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				physicalSize = strings.TrimSpace(parts[1])
+			}
 		}
+		if strings.Contains(line, "Override size:") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				overrideSize = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	// Ưu tiên Override size vì đó là độ phân giải thực tế đang hiển thị
+	if overrideSize != "" {
+		return overrideSize, nil
+	}
+	if physicalSize != "" {
+		return physicalSize, nil
 	}
 
 	return "unknown", nil

@@ -177,11 +177,30 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     // ... handleCanvasClick and Fullscreen logic remains same ...
     const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!canvasRef.current) return;
+        
+        // Parse lại resolution cho chắc chắn (tìm cặp số đầu tiên)
+        const match = device.resolution.match(/(\d+)x(\d+)/);
+        if (!match) {
+             console.warn("Cannot parse resolution for tap:", device.resolution);
+             return;
+        }
+        
+        const origW = parseInt(match[1]);
+        const origH = parseInt(match[2]);
+
         const rect = canvasRef.current.getBoundingClientRect();
-        const [origW, origH] = device.resolution.split('x').map(Number);
+        
+        // Tính toán tọa độ
         const x = Math.floor((e.clientX - rect.left) / rect.width * origW);
         const y = Math.floor((e.clientY - rect.top) / rect.height * origH);
-        deviceService.tap(device.id, x, y).catch(console.error);
+
+        console.log(`Tap: ${x},${y} (Screen: ${origW}x${origH})`); // Debug log
+
+        try {
+            await deviceService.tap(device.id, x, y);
+        } catch (error) {
+            console.error('Failed to send tap:', error);
+        }
     };
 
     return (

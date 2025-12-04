@@ -93,8 +93,17 @@ func (d *ActionDispatcher) executeAction(action *models.Action) error {
 
 	switch action.Type {
 	case "tap":
-		x := int(action.Params["x"].(float64))
-		y := int(action.Params["y"].(float64))
+		// Safety check: Ensure params exist and are numbers
+		xVal, okX := action.Params["x"].(float64)
+		yVal, okY := action.Params["y"].(float64)
+
+		if !okX || !okY {
+			log.Printf("⚠️ Invalid coordinates received for device %s: x=%v, y=%v", device.ID, action.Params["x"], action.Params["y"])
+			return fmt.Errorf("invalid coordinates")
+		}
+
+		x := int(xVal)
+		y := int(yVal)
 		return adbClient.SendTap(device.ADBDeviceID, x, y)
 
 	case "swipe":
