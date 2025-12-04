@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { DeviceGrid } from './components/DeviceGrid';
 import { ControlPanel } from './components/ControlPanel';
 import { useAppStore } from './store/useAppStore';
-import { useWebSocket } from './services/websocket';
+import { wsService } from './services/websocket';
 import { api } from './services/api';
 import {
     RefreshCw,
@@ -23,9 +23,9 @@ function App() {
         setDevices,
         selectDevice,
         clearDeviceSelection,
+        setConnected,
     } = useAppStore();
 
-    const { sendMessage } = useWebSocket();
     const [isScanning, setIsScanning] = useState(false);
     const [batchInput, setBatchInput] = useState('');
     const [showBatchInput, setShowBatchInput] = useState(false);
@@ -34,6 +34,21 @@ function App() {
     useEffect(() => {
         loadDevices();
     }, []);
+
+    // Sync WebSocket connection state
+    useEffect(() => {
+        const checkConnection = () => {
+            setConnected(wsService.isConnected);
+        };
+        
+        // Check immediately
+        checkConnection();
+        
+        // Check periodically
+        const interval = setInterval(checkConnection, 1000);
+        
+        return () => clearInterval(interval);
+    }, [setConnected]);
 
     const loadDevices = async () => {
         setIsScanning(true);

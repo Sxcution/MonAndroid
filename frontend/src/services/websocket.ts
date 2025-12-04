@@ -1,77 +1,77 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
 import { WS_URL } from '@/utils/constants';
 
-export function useWebSocket() {
-    const [isConnected, setIsConnected] = useState(false);
-    const [lastMessage, setLastMessage] = useState<string | ArrayBuffer | null>(null);
-    const wsRef = useRef<WebSocket | null>(null);
+type MessageHandler = (data: ArrayBuffer | string) => void;
 
-    useEffect(() => {
-        let reconnectTimeout: NodeJS.Timeout;
-        let isComponentMounted = true;
+class WebSocketService {
+    private ws: WebSocket | null = null;
+    private subscribers: Set<MessageHandler> = new Set();
+    private reconnectTimeout: NodeJS.Timeout | null = null;
+    private isConnecting = false;
 
-        const connect = () => {
-            if (!isComponentMounted) return;
+    constructor() {
+        this.connect();
+    }
 
-            const ws = new WebSocket(WS_URL);
-            ws.binaryType = 'arraybuffer'; // Important: receive binary as ArrayBuffer
-            wsRef.current = ws;
+    private connect() {
+        if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) return;
 
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                setIsConnected(true);
-            };
+        this.isConnecting = true;
+        console.log('🔌 WebSocket Connecting to', WS_URL);
+        
+        this.ws = new WebSocket(WS_URL);
+        this.ws.binaryType = 'arraybuffer';
 
-            ws.onmessage = (event) => {
-                // Handle both binary (ArrayBuffer) and text (string) messages
-                setLastMessage(event.data);
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                setIsConnected(false);
-
-                if (isComponentMounted) {
-                    console.log('Attempting to reconnect...');
-                    reconnectTimeout = setTimeout(connect, 2000);
-                }
-            };
+        this.ws.onopen = () => {
+            console.log('✅ WebSocket Connected');
+            this.isConnecting = false;
         };
 
-        connect();
+        this.ws.onmessage = (event) => {
+            // Phát tin nhắn tới tất cả component đang lắng nghe
+            this.subscribers.forEach(handler => handler(event.data));
+        };
 
+        this.ws.onclose = () => {
+            console.log('❌ WebSocket Disconnected');
+            this.isConnecting = false;
+            this.scheduleReconnect();
+        };
+
+        this.ws.onerror = (err) => {
+            console.error('⚠️ WebSocket Error', err);
+            this.isConnecting = false;
+        };
+    }
+
+    private scheduleReconnect() {
+        if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+        this.reconnectTimeout = setTimeout(() => {
+            console.log('🔄 Attempting reconnect...');
+            this.connect();
+        }, 2000);
+    }
+
+    // Các component sẽ gọi hàm này để đăng ký nhận dữ liệu
+    public subscribe(handler: MessageHandler) {
+        this.subscribers.add(handler);
         return () => {
-            isComponentMounted = false;
-            clearTimeout(reconnectTimeout);
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.close();
-            }
+            this.subscribers.delete(handler);
         };
-    }, []);
+    }
 
-    const sendMessage = useCallback((message: any) => {
-        const ws = wsRef.current;
-
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(message));
+    public sendMessage(msg: any) {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            const payload = typeof msg === 'string' ? msg : JSON.stringify(msg);
+            this.ws.send(payload);
         } else {
-            console.warn('WebSocket is not connected, will retry...');
-            // Retry after a short delay
-            setTimeout(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    wsRef.current.send(JSON.stringify(message));
-                }
-            }, 500);
+            console.warn('⚠️ Cannot send message: WebSocket not open');
         }
-    }, []);
+    }
 
-    return {
-        isConnected,
-        lastMessage,
-        sendMessage,
-    };
+    public get isConnected() {
+        return this.ws?.readyState === WebSocket.OPEN;
+    }
 }
+
+// Xuất ra 1 instance duy nhất (Singleton)
+export const wsService = new WebSocketService();

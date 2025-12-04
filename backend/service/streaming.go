@@ -100,17 +100,28 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 }
 
 // StopStreaming stops streaming for a specific device
+// Idempotent: can be called multiple times safely
 func (s *StreamingService) StopStreaming(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	stream, exists := s.streams[deviceID]
 	if !exists {
-		return fmt.Errorf("device %s is not streaming", deviceID)
+		// CHANGE: Nếu không tìm thấy stream, coi như đã dừng thành công. Không báo lỗi nữa.
+		log.Printf("⚠️ StopStreaming called for %s but stream not found (already stopped)", deviceID)
+		return nil
 	}
 
 	stream.isStreaming = false
-	close(stream.stopChan)
+
+	// Đóng channel để báo hiệu cho consumer dừng lại
+	// Cần kiểm tra xem channel đã đóng chưa để tránh panic
+	select {
+	case <-stream.stopChan:
+		// Channel already closed
+	default:
+		close(stream.stopChan)
+	}
 
 	// Kill H.264 screenrecord process if running
 	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
@@ -121,7 +132,7 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 
 	delete(s.streams, deviceID)
 
-	log.Printf("Stopped streaming for device %s", deviceID)
+	log.Printf("✅ Stopped streaming for device %s", deviceID)
 	return nil
 }
 
