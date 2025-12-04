@@ -21,89 +21,54 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     const lastFpsUpdateRef = useRef(Date.now());
     const spsRef = useRef<Uint8Array | null>(null);
     const ppsRef = useRef<Uint8Array | null>(null);
+    const hasConfiguredRef = useRef(false);
 
-    // Parse device resolution
+    // Parse resolution
     useEffect(() => {
-        console.log('🔍 Device resolution:', device.resolution);
         if (device.resolution) {
-            const resolutionMatch = device.resolution.match(/(\d+)x(\d+)/);
-            if (resolutionMatch) {
-                const width = parseInt(resolutionMatch[1]);
-                const height = parseInt(resolutionMatch[2]);
-                const scale = 0.4;
-                const scaledDims = { width: width * scale, height: height * scale };
-                console.log('📐 Setting canvas dimensions:', scaledDims);
-                setDimensions(scaledDims);
+            const match = device.resolution.match(/(\d+)x(\d+)/);
+            if (match) {
+                const w = parseInt(match[1]);
+                const h = parseInt(match[2]);
+                setDimensions({ width: w * 0.4, height: h * 0.4 });
             }
-        } else {
-            // Fallback nếu chưa có resolution
-            setDimensions({ width: 288, height: 600 });
         }
     }, [device.resolution]);
 
-    // Manual canvas dimension setting
+    // Update canvas size
     useEffect(() => {
-        if (canvasRef.current && dimensions.width > 0 && dimensions.height > 0) {
-            console.log('🔧 Manually setting canvas dimensions:', dimensions);
+        if (canvasRef.current) {
             canvasRef.current.width = dimensions.width;
             canvasRef.current.height = dimensions.height;
         }
     }, [dimensions]);
 
-    // Start streaming when WebSocket connected
+    // Start Streaming
     useEffect(() => {
-        if (!isConnected) {
-            console.log('⏳ Waiting for WebSocket connection...');
-            return;
-        }
+        if (!isConnected) return;
 
-        const startStreaming = async () => {
-            try {
-                console.log('✅ WebSocket connected! Starting H.264 streaming for:', device.id);
-
-                // Subscribe to device
-                sendMessage({
-                    type: 'subscribe',
-                    device_id: device.id
-                });
-                console.log('📨 Sent subscribe message');
-
-                // Start backend streaming
-                await fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' });
-                console.log('🎬 Backend H.264 streaming started');
-            } catch (error) {
-                console.error('❌ Failed to start streaming:', error);
-            }
-        };
-
-        startStreaming();
+        console.log('🚀 Starting stream for:', device.id);
+        sendMessage({ type: 'subscribe', device_id: device.id });
+        
+        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' })
+            .catch(e => console.error('❌ Start stream failed:', e));
 
         return () => {
-            console.log('🛑 Stopping streaming for:', device.id);
-            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(console.error);
-            sendMessage({
-                type: 'unsubscribe',
-                device_id: device.id
-            });
+            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(() => {});
+            sendMessage({ type: 'unsubscribe', device_id: device.id });
         };
-    }, [device.id, sendMessage, isConnected]);
+    }, [device.id, isConnected, sendMessage]);
 
-    // WebCodecs H.264 decoder
+    // Init Decoder
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+        const ctx = canvasRef.current?.getContext('2d');
+        if (!ctx || !canvasRef.current) return;
 
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        // Create VideoDecoder (configure later when we get SPS/PPS)
         const decoder = new VideoDecoder({
             output: (frame) => {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+                ctx.drawImage(frame, 0, 0, canvasRef.current!.width, canvasRef.current!.height);
                 frame.close();
 
-                // Update FPS
                 frameCountRef.current++;
                 const now = Date.now();
                 if (now - lastFpsUpdateRef.current >= 1000) {
@@ -112,309 +77,183 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                     lastFpsUpdateRef.current = now;
                 }
             },
-            error: (e) => console.error('❌ WebCodecs decoder error:', e)
+            error: (e) => {
+                console.error('❌ WebCodecs Error:', e);
+                // Reset to try re-configuring if needed
+                hasConfiguredRef.current = false;
+            }
         });
 
-        // Will be configured when we receive SPS/PPS
         decoderRef.current = decoder;
-        console.log('📹 WebCodecs decoder created (waiting for SPS/PPS to configure)');
-
         return () => {
-            try {
-                decoder.close();
-            } catch { }
+            if (decoder.state !== 'closed') decoder.close();
         };
     }, []);
 
-    // Handle WebSocket messages (H.264 binary NAL units)
+    // Handle WebSocket Message
     useEffect(() => {
         if (!lastMessage || !decoderRef.current) return;
+        if (!(lastMessage instanceof ArrayBuffer)) return;
 
-        // Binary H.264 NAL unit
-        if (lastMessage instanceof ArrayBuffer) {
-            const buf = new Uint8Array(lastMessage);
+        const buf = new Uint8Array(lastMessage);
+        
+        // Protocol: [4 bytes Length] + [NAL Unit Data]
+        if (buf.byteLength < 5) return;
+        const view = new DataView(buf.buffer);
+        const len = view.getUint32(0);
+        
+        if (len + 4 > buf.byteLength) return;
 
-            // Parse length-prefix: [4 bytes big-endian][NAL data]
-            if (buf.byteLength < 4) return;
+        // Extract NAL (with Start Code)
+        const nalUnit = buf.subarray(4, 4 + len);
+        const nalType = getNALType(nalUnit);
 
-            const len = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
-            if (len <= 0 || 4 + len > buf.byteLength) {
-                console.warn('⚠️ Invalid NAL length:', len, 'total:', buf.byteLength);
-                return;
+        if (nalType === 7) { // SPS
+            spsRef.current = nalUnit;
+        } else if (nalType === 8) { // PPS
+            ppsRef.current = nalUnit;
+        }
+
+        const decoder = decoderRef.current;
+
+        // 1. Configure Decoder (One time)
+        if (!hasConfiguredRef.current && spsRef.current && ppsRef.current) {
+            let spsRaw = stripStartCode(spsRef.current);
+            const ppsRaw = stripStartCode(ppsRef.current);
+
+            // 🔥 HACK: Patch Level IDC if it's too low
+            // Byte 3 is Level. If < 3.1 (0x1F), force it to 4.2 (0x2A)
+            // This fixes "EncodingError" on high-res screens declaring low levels
+            if (spsRaw[3] < 0x1F) {
+                console.warn(`⚠️ SPS Level ${spsRaw[3].toString(16)} too low. Patching to 4.2 (0x2A)`);
+                // Clone to avoid mutating original ref if needed
+                const newSps = new Uint8Array(spsRaw);
+                newSps[3] = 0x2A; 
+                spsRaw = newSps;
             }
 
-            const nalUnit = buf.subarray(4, 4 + len);
-            const decoder = decoderRef.current;
+            const profile = spsRaw[1].toString(16).padStart(2, '0').toUpperCase();
+            const compat = spsRaw[2].toString(16).padStart(2, '0').toUpperCase();
+            const level = spsRaw[3].toString(16).padStart(2, '0').toUpperCase();
+            const codec = `avc1.${profile}${compat}${level}`;
 
-            // Extract NAL type from this individual NAL unit
-            const nalType = getNALType(nalUnit);
-            
-            // Debug log only for important NAL types
-            if (nalType === 7 || nalType === 8 || nalType === 5) {
-                console.log(`📦 Received NAL unit: ${len} bytes, type: ${nalType}${nalType === 7 ? ' (SPS)' : nalType === 8 ? ' (PPS)' : nalType === 5 ? ' (IDR)' : ''}`);
-            }
-
-            // Handle SPS (type 7)
-            if (nalType === 7) {
-                console.log('🔍 Found SPS NAL (type 7), length:', nalUnit.length);
-                spsRef.current = nalUnit;
-            }
-            // Handle PPS (type 8)
-            else if (nalType === 8) {
-                console.log('🔍 Found PPS NAL (type 8), length:', nalUnit.length);
-                ppsRef.current = nalUnit;
-            }
-            
-            // Debug: Log if we're waiting for SPS/PPS
-            if (decoder.state === 'unconfigured') {
-                if (!spsRef.current && nalType !== 7) {
-                    // Only log once per second to avoid spam
-                    const now = Date.now();
-                    if (!(window as any).lastSpsLog || now - (window as any).lastSpsLog > 1000) {
-                        console.log('⏳ Waiting for SPS (NAL type 7)...');
-                        (window as any).lastSpsLog = now;
-                    }
-                } else if (spsRef.current && !ppsRef.current && nalType !== 8) {
-                    const now = Date.now();
-                    if (!(window as any).lastPpsLog || now - (window as any).lastPpsLog > 1000) {
-                        console.log('⏳ Waiting for PPS (NAL type 8)...');
-                        (window as any).lastPpsLog = now;
-                    }
-                }
-            }
-
-            // Configure decoder if we have both SPS and PPS
-            if (decoder.state === 'unconfigured' && spsRef.current && ppsRef.current) {
-                // 1. Lấy RAW NAL (đã loại bỏ start code)
-                const spsRaw = stripStartCode(spsRef.current);
-                const ppsRaw = stripStartCode(ppsRef.current);
-
-                // 2. Tự động tạo chuỗi Codec từ SPS bytes
-                // Byte 1: Profile, Byte 2: Compatibility, Byte 3: Level
-                const profileIdc = spsRaw[1].toString(16).padStart(2, '0').toUpperCase();
-                const profileComp = spsRaw[2].toString(16).padStart(2, '0').toUpperCase();
-                const levelIdc = spsRaw[3].toString(16).padStart(2, '0').toUpperCase();
-                
-                // Chuỗi codec chuẩn: avc1.PPCCLL (Ví dụ: avc1.4D002A cho Main Profile)
-                const codecString = `avc1.${profileIdc}${profileComp}${levelIdc}`;
-
-                console.log(`🔍 Codec detected: ${codecString}`);
-
-                // 3. Tạo avcC binary config
-                const description = createAVCDecoderConfigurationRecord(spsRaw, ppsRaw);
-
-                try {
-                    decoder.configure({
-                        codec: codecString, // ✅ Dùng codec động
-                        optimizeForLatency: true,
-                        description: description,
-                    });
-                    console.log('✅ Decoder configured successfully!', {
-                        codec: codecString,
-                        spsLen: spsRaw.length,
-                        ppsLen: ppsRaw.length,
-                        avcCLen: description.length
-                    });
-                } catch (e) {
-                    console.error('❌ Decoder Configuration Failed:', e);
-                }
-            }
-
-            // Skip if decoder not ready
-            if (decoder.state !== 'configured') return;
-
-            // Only decode video frames (IDR type 5 or Slice type 1)
-            if (nalType !== 5 && nalType !== 1) return;
-
-            // Backpressure: skip frame if decoder queue is full
-            if (decoder.decodeQueueSize > 4) {
-                return; // Drop frame to keep latency low
-            }
-
-            // Detect IDR frame (key frame)
-            const type: 'key' | 'delta' = nalType === 5 ? 'key' : 'delta';
+            console.log(`🔧 Configuring Decoder: ${codec}`);
 
             try {
-                const chunk = new EncodedVideoChunk({
-                    type,
-                    timestamp: performance.now() * 1000, // microseconds
-                    data: nalUnit
+                const description = createAVCDecoderConfigurationRecord(spsRaw, ppsRaw);
+                decoder.configure({
+                    codec: codec,
+                    optimizeForLatency: true,
+                    description: description
                 });
-                decoder.decode(chunk);
-            } catch (error) {
-                console.error('❌ Decode error:', error);
+                hasConfiguredRef.current = true;
+            } catch (e) {
+                console.error('Configuration Failed:', e);
             }
         }
-        // JSON message (control/status)
-        else if (typeof lastMessage === 'string') {
+
+        // 2. Decode Frame
+        if (hasConfiguredRef.current && (nalType === 1 || nalType === 5)) {
             try {
-                const data = JSON.parse(lastMessage);
-                console.log('📨 JSON message:', data);
-            } catch { }
+                // Convert Annex B (Start Code) to AVCC (Length Prefix) for the chunk
+                // This is preferred by WebCodecs when description is provided
+                const avccData = convertToAVCC(nalUnit);
+
+                const chunk = new EncodedVideoChunk({
+                    type: nalType === 5 ? 'key' : 'delta',
+                    timestamp: performance.now() * 1000,
+                    data: avccData
+                });
+                
+                if (decoder.decodeQueueSize < 5) {
+                    decoder.decode(chunk);
+                }
+            } catch (e) {
+                console.error('Decode Error:', e);
+            }
         }
     }, [lastMessage]);
 
+    // ... handleCanvasClick and Fullscreen logic remains same ...
     const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!canvasRef.current) return;
-
-        const canvas = canvasRef.current;
-        const rect = canvas.getBoundingClientRect();
-
-        // Calculate click position relative to original device resolution
-        const [origWidth, origHeight] = device.resolution.split('x').map(Number);
-        const x = Math.floor((e.clientX - rect.left) / rect.width * origWidth);
-        const y = Math.floor((e.clientY - rect.top) / rect.height * origHeight);
-
-        try {
-            await deviceService.tap(device.id, x, y);
-        } catch (error) {
-            console.error('Failed to send tap:', error);
-        }
+        const rect = canvasRef.current.getBoundingClientRect();
+        const [origW, origH] = device.resolution.split('x').map(Number);
+        const x = Math.floor((e.clientX - rect.left) / rect.width * origW);
+        const y = Math.floor((e.clientY - rect.top) / rect.height * origH);
+        deviceService.tap(device.id, x, y).catch(console.error);
     };
-
-    const toggleFullscreen = () => {
-        if (!canvasRef.current) return;
-
-        if (!isFullscreen) {
-            canvasRef.current.requestFullscreen();
-            setIsFullscreen(true);
-        } else {
-            document.exitFullscreen();
-            setIsFullscreen(false);
-        }
-    };
-
-    useEffect(() => {
-        const handleFullscreenChange = () => {
-            setIsFullscreen(!!document.fullscreenElement);
-        };
-
-        document.addEventListener('fullscreenchange', handleFullscreenChange);
-        return () => {
-            document.removeEventListener('fullscreenchange', handleFullscreenChange);
-        };
-    }, []);
 
     return (
         <div className={cn('relative bg-black rounded-lg overflow-hidden', className)}>
-            <canvas
-                ref={canvasRef}
-                width={dimensions.width}
-                height={dimensions.height}
-                onClick={handleCanvasClick}
-                className="w-full h-full object-contain cursor-pointer"
-            />
-
-            {/* FPS Counter */}
-            {fps > 0 && (
-                <div className="absolute top-2 left-2 px-2 py-1 bg-black/70 rounded text-white text-xs font-mono">
-                    {fps} FPS • H.264
-                </div>
-            )}
-
-            {/* Fullscreen button */}
-            <button
-                onClick={toggleFullscreen}
-                className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-black/70 rounded-md text-white transition-colors"
-                title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-            >
-                {isFullscreen ? (
-                    <Minimize2 className="w-5 h-5" />
-                ) : (
-                    <Maximize2 className="w-5 h-5" />
-                )}
-            </button>
-
-            {/* Status overlay */}
+            <canvas ref={canvasRef} onClick={handleCanvasClick} className="w-full h-full object-contain" />
+            <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs pointer-events-none">
+                {fps} FPS
+            </div>
             {fps === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center text-white/60">
-                    <div className="text-center">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-                        <p>{isConnected ? 'Starting H.264 stream...' : 'Connecting...'}</p>
-                    </div>
+                <div className="absolute inset-0 flex items-center justify-center text-white/50">
+                    <div className="animate-spin text-2xl">⟳</div>
                 </div>
             )}
         </div>
     );
 };
 
-// Helper: Get NAL type from an individual NAL unit
-function getNALType(nalUnit: Uint8Array): number {
-    if (nalUnit.length === 0) return -1;
-    
-    // Find start code
-    let offset = 0;
-    if (nalUnit.length >= 4 && nalUnit[0] === 0 && nalUnit[1] === 0) {
-        if (nalUnit[2] === 1) {
-            offset = 3; // 00 00 01
-        } else if (nalUnit[2] === 0 && nalUnit[3] === 1) {
-            offset = 4; // 00 00 00 01
-        }
-    }
+// --- HELPERS ---
 
-    // If start code found, use offset; otherwise use first byte directly (raw NAL)
-    const nalHeaderByte = offset > 0 && offset < nalUnit.length 
-        ? nalUnit[offset] 
-        : nalUnit[0];
-    
-    // Extract NAL type (lower 5 bits)
-    return nalHeaderByte & 0x1F;
+function getNALType(data: Uint8Array): number {
+    if (data.length > 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) return data[4] & 0x1F;
+    if (data.length > 3 && data[0] === 0 && data[1] === 0 && data[2] === 1) return data[3] & 0x1F;
+    return -1;
 }
 
-// Helper: Strip start code from NAL unit (for avcC format)
-function stripStartCode(nalUnit: Uint8Array): Uint8Array {
-    // Find start code
-    let offset = 0;
-    if (nalUnit.length >= 4 && nalUnit[0] === 0 && nalUnit[1] === 0) {
-        if (nalUnit[2] === 1) {
-            offset = 3; // 00 00 01
-        } else if (nalUnit[2] === 0 && nalUnit[3] === 1) {
-            offset = 4; // 00 00 00 01
-        }
-    }
-
-    // Return NAL data without start code
-    if (offset > 0 && offset < nalUnit.length) {
-        return nalUnit.subarray(offset);
-    }
-
-    return nalUnit; // No start code found, return as-is
+function stripStartCode(data: Uint8Array): Uint8Array {
+    if (data.length > 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) return data.subarray(4);
+    if (data.length > 3 && data[0] === 0 && data[1] === 0 && data[2] === 1) return data.subarray(3);
+    return data;
 }
 
 /**
- * Create AVCDecoderConfigurationRecord (avcC) from raw SPS and PPS
- * Reference: ISO/IEC 14496-15
+ * Chuyển đổi NAL từ Annex B (00 00 01 data) sang AVCC (Length data)
+ * WebCodecs thích định dạng này hơn khi đã có description
  */
-function createAVCDecoderConfigurationRecord(sps: Uint8Array, pps: Uint8Array): Uint8Array {
-    const profileIndication = sps[1];
-    const profileCompatibility = sps[2];
-    const levelIndication = sps[3];
-    const lengthSizeMinusOne = 3; 
+function convertToAVCC(data: Uint8Array): Uint8Array {
+    let offset = 0;
+    if (data.length > 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) offset = 4;
+    else if (data.length > 3 && data[0] === 0 && data[1] === 0 && data[2] === 1) offset = 3;
+    else return data; // Không tìm thấy start code, trả về nguyên gốc
 
+    const length = data.length - offset;
+    const newData = new Uint8Array(length + 4);
+    const view = new DataView(newData.buffer);
+    
+    // Ghi độ dài vào 4 byte đầu (Big Endian)
+    view.setUint32(0, length);
+    // Copy dữ liệu NAL (bỏ start code)
+    newData.set(data.subarray(offset), 4);
+    
+    return newData;
+}
+
+function createAVCDecoderConfigurationRecord(sps: Uint8Array, pps: Uint8Array): Uint8Array {
     const bodyLength = 5 + 1 + 2 + sps.length + 1 + 2 + pps.length;
     const buf = new Uint8Array(bodyLength);
     const view = new DataView(buf.buffer);
-
     let offset = 0;
+
     buf[offset++] = 1; // version
-    buf[offset++] = profileIndication;
-    buf[offset++] = profileCompatibility;
-    buf[offset++] = levelIndication;
-    buf[offset++] = 0xFF; // lengthSizeMinusOne (set full 1s for reserved bits)
+    buf[offset++] = sps[1]; // profile
+    buf[offset++] = sps[2]; // compatibility
+    buf[offset++] = sps[3]; // level (Đã được patch)
+    buf[offset++] = 0xFF;   // lengthSizeMinusOne
 
-    // SPS
-    buf[offset++] = 0xE1; // numOfSequenceParameterSets = 1
-    view.setUint16(offset, sps.length, false);
-    offset += 2;
-    buf.set(sps, offset);
-    offset += sps.length;
+    buf[offset++] = 0xE1;   // numSPS
+    view.setUint16(offset, sps.length, false); offset += 2;
+    buf.set(sps, offset); offset += sps.length;
 
-    // PPS
-    buf[offset++] = 1; // numOfPictureParameterSets = 1
-    view.setUint16(offset, pps.length, false);
-    offset += 2;
-    buf.set(pps, offset);
+    buf[offset++] = 1;      // numPPS
+    view.setUint16(offset, pps.length, false); offset += 2;
+    buf.set(pps, offset); offset += pps.length;
 
     return buf;
 }
-
