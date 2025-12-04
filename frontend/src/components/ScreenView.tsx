@@ -8,9 +8,15 @@ import { wsService } from '@/services/websocket';
 interface ScreenViewProps {
     device: Device;
     className?: string;
+    interactive?: boolean; // Cho phép điều khiển hay không
+    quality?: 'low' | 'high';
 }
 
-export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => {
+export const ScreenView: React.FC<ScreenViewProps> = ({ 
+    device, 
+    className,
+    interactive = true 
+}) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 288, height: 600 });
@@ -24,6 +30,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     const spsRef = useRef<Uint8Array | null>(null);
     const ppsRef = useRef<Uint8Array | null>(null);
     const hasConfiguredRef = useRef(false);
+
+    // Refs cho Swipe logic
+    const dragStartRef = useRef<{ x: number, y: number, t: number } | null>(null);
 
     // --- 1. Layout ---
     useEffect(() => {
@@ -189,17 +198,70 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         };
     }, [device.id, resetDecoder]);
 
-    // --- Interaction ---
-    const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-        // (Giữ nguyên logic click cũ)
-        if (!canvasRef.current || !device.resolution) return;
+    // --- XỬ LÝ TƯƠNG TÁC (SWIPE vs TAP) ---
+    
+    const getCoords = (e: React.MouseEvent) => {
+        if (!canvasRef.current || !device.resolution) return null;
         const match = device.resolution.match(/(\d+)x(\d+)/);
-        if (!match) return;
-        const [origW, origH] = [parseInt(match[1]), parseInt(match[2])];
+        if (!match) return null;
+
+        const origW = parseInt(match[1]);
+        const origH = parseInt(match[2]);
         const rect = canvasRef.current.getBoundingClientRect();
+        
         const x = Math.floor((e.clientX - rect.left) / rect.width * origW);
         const y = Math.floor((e.clientY - rect.top) / rect.height * origH);
-        deviceService.tap(device.id, x, y).catch(console.error);
+        return { x, y };
+    };
+
+    const handleMouseDown = (e: React.MouseEvent) => {
+        if (!interactive) return;
+        const coords = getCoords(e);
+        if (coords) {
+            dragStartRef.current = { x: coords.x, y: coords.y, t: Date.now() };
+        }
+    };
+
+    const handleMouseUp = async (e: React.MouseEvent) => {
+        if (!interactive || !dragStartRef.current) return;
+        
+        const endCoords = getCoords(e);
+        if (!endCoords) return;
+
+        const start = dragStartRef.current;
+        const diffX = endCoords.x - start.x;
+        const diffY = endCoords.y - start.y;
+        const dist = Math.sqrt(diffX * diffX + diffY * diffY);
+        const duration = Date.now() - start.t;
+
+        // Ngưỡng để coi là Swipe (di chuyển > 10 pixel)
+        if (dist > 10) {
+            console.log("Swiping:", start.x, start.y, "->", endCoords.x, endCoords.y);
+            try {
+                await deviceService.swipe(
+                    device.id, 
+                    start.x, start.y, 
+                    endCoords.x, endCoords.y, 
+                    Math.max(duration, 100) // Duration tối thiểu
+                );
+            } catch (err) {
+                console.error("Swipe error:", err);
+            }
+        } else {
+            // Nếu di chuyển ít -> Coi là Tap
+            console.log("Tapping:", endCoords.x, endCoords.y);
+            try {
+                await deviceService.tap(device.id, endCoords.x, endCoords.y);
+            } catch (err) {
+                console.error("Tap error:", err);
+            }
+        }
+
+        dragStartRef.current = null;
+    };
+
+    const handleMouseLeave = () => {
+        dragStartRef.current = null;
     };
     
     // ... (Giữ nguyên logic fullscreen) ...
@@ -221,11 +283,21 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     }, []);
 
     return (
-        <div className={cn('relative bg-black rounded-lg overflow-hidden', className)}>
-            <canvas ref={canvasRef} onClick={handleCanvasClick} className="w-full h-full object-contain cursor-pointer" />
-            <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs pointer-events-none">
-                {fps} FPS | Annex B
-            </div>
+        <div className={cn('relative bg-black overflow-hidden', className)}>
+            <canvas
+                ref={canvasRef}
+                onMouseDown={handleMouseDown}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseLeave}
+                className={cn("w-full h-full object-contain select-none", interactive ? "cursor-pointer" : "cursor-default")}
+                // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
+                onContextMenu={(e) => e.preventDefault()}
+            />
+            {fps > 0 && (
+                <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs pointer-events-none">
+                    {fps} FPS | Annex B
+                </div>
+            )}
             <button onClick={toggleFullscreen} className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-black/70 rounded-md text-white">
                 {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
             </button>

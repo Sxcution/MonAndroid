@@ -1,81 +1,131 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useRef, useEffect } from 'react';
 import { Device } from '@/types/device';
 import { ScreenView } from './ScreenView';
-import { Maximize2 } from 'lucide-react';
+import { Search } from 'lucide-react'; // Dùng icon kính lúp
 import { cn } from '@/utils/helpers';
+import { useAppStore } from '@/store/useAppStore';
 
 interface DeviceCardProps {
     device: Device;
     isSelected: boolean;
     onSelect: () => void;
-    onExpand: () => void; // Hàm callback khi bấm nút phóng to
+    onExpand: () => void;
 }
 
-// Sử dụng memo để tối ưu re-render
 export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected, onSelect, onExpand }) => {
-    // Logic chọn thiết bị khi click vào header (giữ nguyên)
-    const handleHeaderClick = (e: React.MouseEvent) => {
+    const { expandedDeviceId } = useAppStore();
+    const isExpanded = expandedDeviceId === device.id;
+    
+    // Logic kéo thả nút kính lúp
+    const btnRef = useRef<HTMLButtonElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [btnPos, setBtnPos] = useState({ x: 0, y: 0 }); // Start at top-left or customized
+    const isDraggingBtn = useRef(false);
+
+    const handleMouseDownBtn = (e: React.MouseEvent) => {
         e.stopPropagation();
-        onSelect();
+        isDraggingBtn.current = true;
     };
 
-    const isOnline = device.status === 'online';
+    // Xử lý kéo thả nút và dính biên (Snap)
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            if (!isDraggingBtn.current || !containerRef.current) return;
+            const rect = containerRef.current.getBoundingClientRect();
+            // Tính vị trí tương đối trong card
+            let newX = e.clientX - rect.left - 15; // 15 là nửa width button
+            let newY = e.clientY - rect.top - 15;
+
+            // Giới hạn trong khung
+            newX = Math.max(0, Math.min(newX, rect.width - 30));
+            newY = Math.max(0, Math.min(newY, rect.height - 30));
+
+            setBtnPos({ x: newX, y: newY });
+        };
+
+        const handleMouseUp = () => {
+            if (!isDraggingBtn.current || !containerRef.current) return;
+            isDraggingBtn.current = false;
+            
+            // Snap logic: Dính trái hoặc phải
+            const rect = containerRef.current.getBoundingClientRect();
+            const mid = rect.width / 2;
+            
+            setBtnPos(prev => ({
+                x: prev.x < mid ? 2 : rect.width - 32, // 32 là size button + margin
+                y: prev.y
+            }));
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, []);
 
     return (
         <div
+            ref={containerRef}
             className={cn(
-                'bg-gray-800 rounded-lg overflow-hidden border-2 transition-all relative group',
-                isSelected ? 'border-blue-500' : 'border-transparent hover:border-gray-600'
+                'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group',
+                // Border màu xanh nếu được chọn
+                isSelected ? 'border-blue-500' : 'border-gray-700 hover:border-gray-500'
             )}
+            onClick={onSelect}
         >
-            {/* Header: Tên máy và Trạng thái */}
-            <div
-                className="bg-gray-900 p-2 flex justify-between items-center cursor-pointer"
-                onClick={handleHeaderClick}
-            >
-                <div className="flex items-center space-x-2 overflow-hidden">
-                    <input type="checkbox" checked={isSelected} readOnly className="rounded" />
-                    <span className="text-sm font-medium text-white truncate" title={device.id}>
-                        {device.name || device.id}
-                    </span>
-                </div>
-                <div className="flex items-center">
-                     {/* Nút Phóng to (Kính lúp) */}
-                     <button
-                        onClick={(e) => {
-                            e.stopPropagation(); // Ngăn chọn card khi bấm nút này
-                            onExpand();
-                        }}
-                        className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded focus:outline-none"
-                        title="Phóng to"
-                    >
-                        <Maximize2 size={16} />
-                    </button>
-                    <span className={cn("ml-2 w-2 h-2 rounded-full", isOnline ? "bg-green-500" : "bg-red-500")} />
-                </div>
-            </div>
-
-            {/* Body: Màn hình điều khiển (ScreenView) */}
-            {/* Ở Grid View, ta dùng bitrate thấp/độ phân giải thấp để tối ưu hiệu năng */}
-            <div className="aspect-[9/16] bg-black relative">
-                {isOnline ? (
+            {/* ScreenView Full Ô */}
+            <div className="w-full h-full aspect-[9/16] bg-black relative">
+                {device.status === 'online' ? (
                     <ScreenView
                         device={device}
-                        className="w-full h-full cursor-crosshair" // Con trỏ chuột dạng + để dễ điều khiển
+                        className="w-full h-full"
+                        interactive={true} // Cho phép click thẳng vào đây
                     />
                 ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-xs">
                         Offline
                     </div>
                 )}
-                
-                {/* Overlay thông tin thêm (nếu cần) */}
-                {device.resolution && (
-                    <div className="absolute bottom-1 right-1 text-xs text-gray-400 bg-black/50 px-1 rounded">
-                        {device.resolution.split('x')[0]}p
+
+                {/* Overlay khi đang phóng to (Expanded) */}
+                {isExpanded && (
+                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 pointer-events-none border-2 border-yellow-500/50">
+                        <span className="text-yellow-500 font-bold text-sm animate-pulse px-2 py-1 bg-black/40 rounded">
+                            Đang điều khiển
+                        </span>
                     </div>
                 )}
+
+                {/* Thông tin tên máy nhỏ ở đáy (nếu cần nhận biết) */}
+                <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
+                    {device.name || device.adb_device_id}
+                </div>
             </div>
+
+            {/* Nút Kính Lúp Draggable */}
+            {device.status === 'online' && (
+                <button
+                    ref={btnRef}
+                    onMouseDown={handleMouseDownBtn}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        // Chỉ expand nếu không phải đang kéo
+                        if (!isDraggingBtn.current) onExpand();
+                    }}
+                    style={{
+                        top: btnPos.y,
+                        left: btnPos.x,
+                        position: 'absolute',
+                    }}
+                    // Scale 80% (giảm 20%), hình tròn, kính lúp
+                    className="z-20 w-8 h-8 flex items-center justify-center bg-gray-800/80 hover:bg-blue-600 text-white rounded-full shadow-lg backdrop-blur-sm border border-white/10 transition-colors cursor-grab active:cursor-grabbing transform scale-90"
+                    title="Phóng to"
+                >
+                    <Search size={14} />
+                </button>
+            )}
         </div>
     );
 });
