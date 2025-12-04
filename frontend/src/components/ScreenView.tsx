@@ -26,6 +26,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     const spsRef = useRef<Uint8Array | null>(null);
     const ppsRef = useRef<Uint8Array | null>(null);
     const hasConfiguredRef = useRef(false);
+    
+    // 🔥 THÊM REF MỚI ĐỂ TRACKING KEYFRAME
+    const hasReceivedFirstKeyFrameRef = useRef(false);
 
     // 1. Layout Resolution
     useEffect(() => {
@@ -52,6 +55,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
             try { decoderRef.current.reset(); } catch {}
         }
         hasConfiguredRef.current = false;
+        hasReceivedFirstKeyFrameRef.current = false; // Reset cờ này
         spsRef.current = null;
         ppsRef.current = null;
     }, []);
@@ -119,7 +123,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                             optimizeForLatency: true
                         });
                         hasConfiguredRef.current = true;
+                        hasReceivedFirstKeyFrameRef.current = false; // Reset chờ keyframe
                     } catch (e) {
+                        console.error("Config error", e);
                         resetDecoder();
                         return;
                     }
@@ -129,7 +135,21 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
             // Decode (Annex B Mode - ghép SPS/PPS vào IDR frame)
             if (hasConfiguredRef.current && (nalType === 1 || nalType === 5)) {
                 try {
+                    // 🔥 SỬA LỖI Ở ĐÂY:
+                    // Nếu chưa nhận được Key Frame đầu tiên sau khi config, thì BỎ QUA frame Type 1
+                    if (!hasReceivedFirstKeyFrameRef.current) {
+                        if (nalType === 5) {
+                            hasReceivedFirstKeyFrameRef.current = true;
+                            console.log(`[${device.id}] ✅ First Key Frame received. Starting decode.`);
+                        } else {
+                            // Bỏ qua Delta frame để tránh DataError
+                            return; 
+                        }
+                    }
+
+                    // Chuẩn bị chunk data
                     let chunkData = nalUnit;
+                    // Nếu là Key Frame, gắn thêm SPS/PPS vào đầu để đảm bảo (Annex B requirement)
                     if (nalType === 5 && spsRef.current && ppsRef.current) {
                         const newData = new Uint8Array(spsRef.current.length + ppsRef.current.length + nalUnit.length);
                         newData.set(spsRef.current, 0);
@@ -144,11 +164,17 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                         data: chunkData
                     });
                     
+                    // Chỉ decode nếu hàng đợi không quá đầy (giảm latency)
                     if (decoderRef.current.decodeQueueSize < 3) {
                         decoderRef.current.decode(chunk);
+                    } else {
+                        // Nếu hàng đợi đầy, chỉ drop delta, không drop key
+                        if (nalType === 5) decoderRef.current.decode(chunk);
+                        else chunk.close(); // Giải phóng bộ nhớ
                     }
                 } catch (e) {
-                    console.error(e);
+                    console.error('Decode Error:', e);
+                    // Không reset ngay lập tức để tránh vòng lặp, chỉ log
                 }
             }
         };
