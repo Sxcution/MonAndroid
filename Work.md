@@ -694,63 +694,57 @@ Test: Manual on real devices
 
 ---
 
-# 📊 IMPLEMENTATION STATUS (Last Updated: 2025-12-04)
+# 📊 IMPLEMENTATION STATUS (Updated)
 
 ## ✅ COMPLETED
+
+### Core Features
+- [x] **Multi-Device Streaming:** 22+ devices support.
+- [x] **Stable H.264 Decoding:** WebCodecs Annex B mode, Auto-level patching.
+- [x] **Grid View:** No cross-talk/glitching (ID-based filtering).
+- [x] **Performance:** Optimized Bitrate & Resolution, Singleton WebSocket.
+
+### Backend
+- [x] **ADB Wrapper:** Robust parsing, "Override size" support.
+- [x] **Process Management:** Idempotent Start/Stop (No 500 errors).
+- [x] **Protocol:** Custom Binary Protocol with Device ID header.
+- [x] **Streaming Service:** H.264 buffer strategy, SPS/PPS caching.
+- [x] **WebSocket Hub:** Device-specific broadcasting, no "all" subscription.
+
+### Frontend
+- [x] **Architecture:** Service-based WebSocket (Singleton).
+- [x] **UI:** Responsive Grid, Control Panel, Action Bar.
+- [x] **Decoder:** WebCodecs Annex B mode, Auto codec detection.
+- [x] **Filtering:** Device ID-based message filtering.
+- [x] **Recovery:** Auto decoder reset on errors.
 
 ### Phase 3: Frontend Setup (100%)
 - [x] Electron + React 18 + TypeScript
 - [x] Vite build configuration
 - [x] Zustand state management
-- [x] WebSocket client (structure)
+- [x] WebSocket Singleton Service
 - [x] HTTP API client (axios)
 - [x] Tailwind CSS + custom theme
-- [x] npm dependencies (471 packages)
 
 ### Phase 4: Frontend UI Components (100%)
 - [x] DeviceCard - Device thumbnail với live preview
-- [x] DeviceGrid - Responsive grid layout
-- [x] ScreenView - Canvas screen mirroring
+- [x] DeviceGrid - Responsive grid layout (22+ devices)
+- [x] ScreenView - Canvas screen mirroring (Annex B mode)
 - [x] ControlPanel - Modal device control
 - [x] ActionBar - Quick actions (Back, Home, Volume, Input)
 - [x] App - Main component với header, toolbar
 
 ### Phase 5: Frontend Services (100%)
 - [x] API service - REST endpoints với axios
-- [x] WebSocket hook - Auto-reconnect
+- [x] WebSocket Singleton - One connection for entire app
 - [x] Device service - High-level control methods
-   ```go
-   func ListDevices() ([]string, error)
-   func ExecuteCommand(deviceID, cmd string) (string, error)
-   func ScreenCapture(deviceID string) ([]byte, error)
-   func SendTap(deviceID string, x, y int) error
-   ```
 
-2. **Complete Device Manager ADB Integration**
-   - Replace mock data với real ADB scan
-   - Detect device properties (resolution, Android version, battery)
-
-3. **Implement Screen Streaming Service**
-   - Capture screen với `adb exec-out screencap -p`
-   - Encode to base64
-   - Broadcast qua WebSocket
-
-4. **Complete WebSocket Communication**
-   - Upgrade HTTP connection
-   - Handle client messages
-   - Broadcast device updates in real-time
-
-### Short-term
-5. Implement action execution (tap, swipe, input, keys)
-6. Add action logging
-7. Test với real Android devices
-8. Performance optimization (target 30 FPS, <20ms latency)
-
-### Long-term
-9. Install GCC để enable SQLite
-10. Add device profiles
-11. Implement macro recording/playback
-12. Advanced features (scheduled tasks, export/import)
+### Phase 1 & 2: Backend Services (100%)
+- [x] ADB wrapper - Device scanning, command execution
+- [x] Device Manager - Real-time device status
+- [x] Action Dispatcher - Touch, Key, Text input
+- [x] Streaming Service - H.264 hardware encoding
+- [x] WebSocket Hub - Binary message broadcasting
 
 ## 📁 PROJECT FILES
 
@@ -768,15 +762,28 @@ Test: Manual on real devices
 
 ### Development Mode
 ```powershell
-# Terminal 1 - Backend
+# Terminal 1 - Backend (with Air hot reload)
 cd backend
-.\backend.exe
+air
+# Or: go run main.go
 
 # Terminal 2 - Frontend  
 cd frontend
 npm run dev
 
 # Open browser: http://localhost:5173
+```
+
+### Production Build
+```powershell
+# Backend
+cd backend
+go build -o backend.exe .
+
+# Frontend
+cd frontend
+npm run build
+npm run electron:build
 ```
 
 ### Current Features Available for Testing

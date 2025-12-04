@@ -8,7 +8,7 @@ export const DeviceGrid: React.FC = () => {
         devices,
         selectedDevices,
         toggleDeviceSelection,
-        selectDevice,
+        setExpandedDevice,
     } = useAppStore();
 
     // ✅ Hiển thị tất cả thiết bị (bỏ giới hạn slice)
@@ -27,16 +27,18 @@ export const DeviceGrid: React.FC = () => {
     }
 
     return (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 p-4">
-            {displayDevices.map((device) => (
-                <DeviceCard
-                    key={device.id}
-                    device={device}
-                    isSelected={selectedDevices.includes(device.id)}
-                    onSelect={() => toggleDeviceSelection(device.id)}
-                    onClick={() => selectDevice(device.id)}
-                />
-            ))}
+        <div className="p-4 overflow-y-auto h-full bg-gray-950">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+                {displayDevices.map((device) => (
+                    <DeviceCard
+                        key={device.id}
+                        device={device}
+                        isSelected={selectedDevices.includes(device.id)}
+                        onSelect={() => toggleDeviceSelection(device.id)}
+                        onExpand={() => setExpandedDevice(device.id)}
+                    />
+                ))}
+            </div>
         </div>
     );
 };

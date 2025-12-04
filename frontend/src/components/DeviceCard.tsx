@@ -1,99 +1,83 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Device } from '@/types/device';
-import { cn, formatBattery, getBatteryColor, getStatusColor } from '@/utils/helpers';
-import { Battery, Wifi, WifiOff } from 'lucide-react';
 import { ScreenView } from './ScreenView';
+import { Maximize2 } from 'lucide-react';
+import { cn } from '@/utils/helpers';
 
 interface DeviceCardProps {
     device: Device;
-    isSelected?: boolean;
-    onSelect?: () => void;
-    onClick?: () => void;
+    isSelected: boolean;
+    onSelect: () => void;
+    onExpand: () => void; // Hàm callback khi bấm nút phóng to
 }
 
-export const DeviceCard: React.FC<DeviceCardProps> = ({
-    device,
-    isSelected = false,
-    onSelect,
-    onClick,
-}) => {
+// Sử dụng memo để tối ưu re-render
+export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected, onSelect, onExpand }) => {
+    // Logic chọn thiết bị khi click vào header (giữ nguyên)
+    const handleHeaderClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onSelect();
+    };
+
     const isOnline = device.status === 'online';
 
     return (
         <div
             className={cn(
-                'relative group rounded-lg border-2 p-4 transition-all duration-200 cursor-pointer',
-                'hover:shadow-lg hover:scale-105',
-                isSelected ? 'border-primary bg-primary/5' : 'border-border bg-card',
-                !isOnline && 'opacity-60'
+                'bg-gray-800 rounded-lg overflow-hidden border-2 transition-all relative group',
+                isSelected ? 'border-blue-500' : 'border-transparent hover:border-gray-600'
             )}
-            onClick={onClick}
         >
-            {/* Selection checkbox */}
-            {onSelect && (
-                <div
-                    className="absolute top-2 right-2 z-10"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onSelect();
-                    }}
-                >
-                    <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => { }}
-                        className="w-5 h-5 cursor-pointer"
-                    />
-                </div>
-            )}
-
-            {/* Live screen streaming */}
-            <div className="aspect-[9/16] bg-black rounded-md mb-3 overflow-hidden">
-                <ScreenView device={device} className="w-full h-full" />
-            </div>
-
-            {/* Device info */}
-            <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                    <h3 className="font-semibold truncate">{device.name}</h3>
-                    <div className={cn('flex items-center gap-1', getStatusColor(device.status))}>
-                        {isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}
-                    </div>
-                </div>
-
-                <div className="text-sm text-muted-foreground space-y-1">
-                    <div className="flex items-center justify-between">
-                        <span>Model:</span>
-                        <span className="truncate ml-2">{device.adb_device_id.slice(0, 12)}...</span>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                        <span>Android:</span>
-                        <span>{device.android_version}</span>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                        <span>Resolution:</span>
-                        <span>{device.resolution}</span>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                        <span>Battery:</span>
-                        <div className={cn('flex items-center gap-1', getBatteryColor(device.battery))}>
-                            <Battery size={14} />
-                            <span>{formatBattery(device.battery)}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Online indicator */}
+            {/* Header: Tên máy và Trạng thái */}
             <div
-                className={cn(
-                    'absolute bottom-2 left-2 w-2 h-2 rounded-full',
-                    isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                className="bg-gray-900 p-2 flex justify-between items-center cursor-pointer"
+                onClick={handleHeaderClick}
+            >
+                <div className="flex items-center space-x-2 overflow-hidden">
+                    <input type="checkbox" checked={isSelected} readOnly className="rounded" />
+                    <span className="text-sm font-medium text-white truncate" title={device.id}>
+                        {device.name || device.id}
+                    </span>
+                </div>
+                <div className="flex items-center">
+                     {/* Nút Phóng to (Kính lúp) */}
+                     <button
+                        onClick={(e) => {
+                            e.stopPropagation(); // Ngăn chọn card khi bấm nút này
+                            onExpand();
+                        }}
+                        className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded focus:outline-none"
+                        title="Phóng to"
+                    >
+                        <Maximize2 size={16} />
+                    </button>
+                    <span className={cn("ml-2 w-2 h-2 rounded-full", isOnline ? "bg-green-500" : "bg-red-500")} />
+                </div>
+            </div>
+
+            {/* Body: Màn hình điều khiển (ScreenView) */}
+            {/* Ở Grid View, ta dùng bitrate thấp/độ phân giải thấp để tối ưu hiệu năng */}
+            <div className="aspect-[9/16] bg-black relative">
+                {isOnline ? (
+                    <ScreenView
+                        device={device}
+                        className="w-full h-full cursor-crosshair" // Con trỏ chuột dạng + để dễ điều khiển
+                    />
+                ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+                        Offline
+                    </div>
                 )}
-            />
+                
+                {/* Overlay thông tin thêm (nếu cần) */}
+                {device.resolution && (
+                    <div className="absolute bottom-1 right-1 text-xs text-gray-400 bg-black/50 px-1 rounded">
+                        {device.resolution.split('x')[0]}p
+                    </div>
+                )}
+            </div>
         </div>
     );
-};
+});
+
+DeviceCard.displayName = 'DeviceCard';

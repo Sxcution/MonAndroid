@@ -46,7 +46,7 @@
         },
         "services": {
             "api_client": "api",
-            "websocket_hook": "useWebSocket",
+            "websocket_service": "wsService",
             "device_service": "deviceService"
         },
         "store": {

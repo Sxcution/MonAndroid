@@ -13,6 +13,7 @@ interface AppStore {
 
     // UI state
     isConnected: boolean;
+    expandedDeviceId: string | null; // ID của máy đang phóng to
 
     // Device actions
     setDevices: (devices: Device[]) => void;
@@ -22,6 +23,7 @@ interface AppStore {
     toggleDeviceSelection: (id: string) => void;
     selectDevice: (id: string | null) => void;
     clearDeviceSelection: () => void;
+    setExpandedDevice: (id: string | null) => void;
 
     // Real-time updates
     onDeviceStatusChange: (id: string, status: 'online' | 'offline') => void;
@@ -42,6 +44,7 @@ export const useAppStore = create<AppStore>((set) => ({
     selectedDeviceDetail: null,
     actions: [],
     isConnected: false,
+    expandedDeviceId: null,
 
     // Device actions
     setDevices: (devices) => set({ devices }),
@@ -76,6 +79,8 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
 
     clearDeviceSelection: () => set({ selectedDevices: [] }),
+
+    setExpandedDevice: (id) => set({ expandedDeviceId: id }),
 
     // Real-time updates
     onDeviceStatusChange: (id, status) => set((state) => ({

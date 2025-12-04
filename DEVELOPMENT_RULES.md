@@ -248,21 +248,40 @@ await api.device.scanDevices() // No error handling
 
 ---
 
-## IX. PERFORMANCE TARGETS
+## IX. PERFORMANCE & STREAMING PROTOCOL
 
-### Screen Streaming
+### 1. H.264 Streaming Pipeline
+- **Source:** Android `screenrecord` (Raw H.264 Annex B).
+- **Backend Processing:**
+  1. Read stdout from ADB (Buffer Strategy).
+  2. Extract NAL Units (00 00 00 01 start codes).
+  3. **Encapsulation:** Prepend Device ID to NAL.
+     Format: `[1 byte ID_LEN] [ID_BYTES] [NAL_DATA]`
+  4. Broadcast via WebSocket (Binary Message).
+- **Frontend Rendering:**
+  1. `wsService` receives binary message.
+  2. `ScreenView` parses header -> Checks Device ID.
+  3. **Decoding:**
+     - Mode: Annex B (Raw stream).
+     - Config: Auto-detect codec string (e.g., `avc1.4D002A`).
+     - Keyframes: Inject SPS/PPS before IDR frames (`SPS + PPS + IDR`).
+     - Canvas: `ctx.drawImage` from `VideoFrame`.
+
+### 2. WebSocket Rules
+- **Singleton:** Use `wsService` (exported const), DO NOT create `new WebSocket()` inside components.
+- **Filtering:** Always filter messages by `device_id` on the frontend to prevent cross-talk in Grid View.
+
+### 3. ADB Configuration
+- **Resolution:** Max 1024px height for Grid View performance.
+- **Bitrate:** 1Mbps - 4Mbps.
+- **Flags:** NEVER use `--verbose` with stdout streaming.
+
+### 4. Performance Targets
 - **Target FPS**: 30 FPS
 - **Max Latency**: 20ms
-- **Method**: 
-  1. Capture screen with `adb exec-out screencap -p`
-  2. Encode to base64
-  3. Send via WebSocket
-  4. Throttle to 30 FPS max
-
-### Action Execution
-- **Target Latency**: <20ms from UI click to ADB command
+- **Action Execution**: <20ms from UI click to ADB command
 - **Queue Size**: 100 actions max
-- **Concurrent Devices**: Support 10-20+ devices
+- **Concurrent Devices**: Support 22+ devices
 
 ---
 

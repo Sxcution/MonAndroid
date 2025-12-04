@@ -107,4 +107,11 @@ export const deviceService = {
     async openMenu(deviceId: string) {
         return this.pressKey(deviceId, KEY_CODES.MENU);
     },
+
+    /**
+     * Send key event (alias for pressKey for compatibility)
+     */
+    async sendKey(deviceId: string, keycode: number) {
+        return this.pressKey(deviceId, keycode);
+    },
 };

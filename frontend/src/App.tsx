@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { DeviceGrid } from './components/DeviceGrid';
 import { ControlPanel } from './components/ControlPanel';
+import { ExpandedDeviceView } from './components/ExpandedDeviceView';
 import { useAppStore } from './store/useAppStore';
 import { wsService } from './services/websocket';
 import { api } from './services/api';
@@ -19,6 +20,7 @@ function App() {
         devices,
         selectedDevices,
         selectedDeviceDetail,
+        expandedDeviceId,
         isConnected,
         setDevices,
         selectDevice,
@@ -178,6 +180,11 @@ function App() {
             <main className="container mx-auto">
                 <DeviceGrid />
             </main>
+
+            {/* Expanded Device View (Phóng to) */}
+            {expandedDeviceId && (
+                <ExpandedDeviceView deviceId={expandedDeviceId} />
+            )}
 
             {/* Control panel modal */}
             {selectedDeviceDetail && (
