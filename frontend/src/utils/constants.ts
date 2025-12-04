@@ -1,16 +1,3 @@
-export const API_BASE_URL = 'http://localhost:8080';
-export const WS_URL = 'ws://localhost:8081/ws';
-
-export const ROUTES = {
-    DEVICES: '/api/devices',
-    DEVICE_DETAIL: (id: string) => `/api/devices/${id}`,
-    DEVICE_SCAN: (id: string) => `/api/devices/${id}/scan`,
-    ACTIONS: '/api/actions',
-    ACTIONS_BATCH: '/api/actions/batch',
-    ACTION_DETAIL: (id: string) => `/api/actions/${id}`,
-    PROFILES: '/api/profiles',
-    PROFILE_DETAIL: (id: string) => `/api/profiles/${id}`,
-} as const;
 
 export const ACTION_TYPES = {
     TAP: 'tap',

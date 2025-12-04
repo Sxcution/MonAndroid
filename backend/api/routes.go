@@ -5,7 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRoutes(router *gin.Engine, dm *service.DeviceManager, ad *service.ActionDispatcher, wsHub *WebSocketHub) {
+func SetupRoutes(router *gin.Engine, dm *service.DeviceManager, ad *service.ActionDispatcher, wsHub *WebSocketHub, ss *service.StreamingService) {
 	// Enable CORS
 	router.Use(CORSMiddleware())
 
@@ -25,6 +25,37 @@ func SetupRoutes(router *gin.Engine, dm *service.DeviceManager, ad *service.Acti
 			})
 			devices.POST("/scan", func(c *gin.Context) {
 				ScanDevices(c, dm)
+			})
+		}
+
+		// Action routes
+		actions := api.Group("/actions")
+		{
+			actions.POST("", func(c *gin.Context) {
+				ExecuteAction(c, dm, ad)
+			})
+			actions.POST("/batch", func(c *gin.Context) {
+				ExecuteBatchAction(c, dm, ad)
+			})
+		}
+
+		// Streaming routes
+		streaming := api.Group("/streaming")
+		{
+			streaming.POST("/start/:device_id", func(c *gin.Context) {
+				StartStreaming(c, ss)
+			})
+			streaming.POST("/stop/:device_id", func(c *gin.Context) {
+				StopStreaming(c, ss)
+			})
+			streaming.POST("/start-all", func(c *gin.Context) {
+				StartAllStreaming(c, ss)
+			})
+			streaming.POST("/stop-all", func(c *gin.Context) {
+				StopAllStreaming(c, ss)
+			})
+			streaming.GET("/status", func(c *gin.Context) {
+				GetStreamingStatus(c, ss)
 			})
 		}
 	}

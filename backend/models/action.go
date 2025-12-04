@@ -11,9 +11,9 @@ type Action struct {
 }
 
 type ActionRequest struct {
-	DeviceID  string                 `json:"device_id,omitempty"`
-	DeviceIDs []string               `json:"device_ids,omitempty"` // For batch operations
-	Action    ActionData             `json:"action"`
+	DeviceID  string     `json:"device_id,omitempty"`
+	DeviceIDs []string   `json:"device_ids,omitempty"` // For batch operations
+	Action    ActionData `json:"action"`
 }
 
 type ActionData struct {

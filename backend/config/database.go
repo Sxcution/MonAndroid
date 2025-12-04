@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"log"
 	"os"
-	
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
-	DatabasePath = "./data/androidcontrol.db"
+	DatabasePath   = "./data/androidcontrol.db"
 	MigrationsPath = "./scripts/migrations.sql"
 )
 
