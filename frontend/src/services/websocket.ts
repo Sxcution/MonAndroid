@@ -18,6 +18,7 @@ class WebSocketService {
         this.isConnecting = true;
         console.log('🔌 WebSocket Connecting to', WS_URL);
         
+        // 1) Đảm bảo nhận frame H.264 là ArrayBuffer
         this.ws = new WebSocket(WS_URL);
         this.ws.binaryType = 'arraybuffer';
 
@@ -27,8 +28,31 @@ class WebSocketService {
         };
 
         this.ws.onmessage = (event) => {
-            // Phát tin nhắn tới tất cả component đang lắng nghe
-            this.subscribers.forEach(handler => handler(event.data));
+            try {
+                // Xử lý string (JSON) - chỉ parse nếu thật sự là string
+                if (typeof event.data === 'string') {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        // Gửi JSON message tới subscribers
+                        this.subscribers.forEach(handler => handler(event.data));
+                    } catch (e) {
+                        console.warn("[WS] Non-JSON text msg ignored"); // KHÔNG close socket
+                    }
+                    return;
+                }
+
+                // Nhị phân: chuyển qua H.264 handler
+                if (event.data instanceof ArrayBuffer) {
+                    // Gửi binary frame tới subscribers
+                    this.subscribers.forEach(handler => handler(event.data));
+                    return;
+                }
+
+                console.warn("[WS] Unknown frame type ignored");
+            } catch (err) {
+                console.error("[WS] onmessage error:", err);
+                // ❌ KHÔNG ws.close() ở đây — chỉ log, để tránh vòng reconnect vô hạn
+            }
         };
 
         this.ws.onclose = () => {
@@ -40,6 +64,7 @@ class WebSocketService {
         this.ws.onerror = (err) => {
             console.error('⚠️ WebSocket Error', err);
             this.isConnecting = false;
+            // ❌ KHÔNG tự đóng socket ở đây
         };
     }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // WebSocketBroadcaster interface to avoid import cycle
@@ -122,16 +123,19 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 		close(stream.stopChan)
 	}
 
-	// Kill H.264 screenrecord process if running
+	// ⚡ CHANGE: Kiểm tra process state trước khi kill để tránh lỗi Access Denied
 	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
-		if err := stream.h264Cmd.Process.Kill(); err != nil {
-			log.Printf("Warning: failed to kill H.264 process for %s: %v", deviceID, err)
+		if stream.h264Cmd.ProcessState == nil || !stream.h264Cmd.ProcessState.Exited() {
+			// Chỉ kill nếu nó chưa thoát
+			if err := stream.h264Cmd.Process.Kill(); err != nil {
+				log.Printf("Warning: failed to kill H.264 process for %s: %v", deviceID, err)
+			}
 		}
 	}
 
 	delete(s.streams, deviceID)
 
-	log.Printf("✅ Stopped streaming for device %s", deviceID)
+	// log.Printf("✅ Stopped streaming for device %s", deviceID) // Tắt log này cho đỡ spam
 	return nil
 }
 
@@ -139,18 +143,47 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 // Uses buffer accumulation strategy to avoid any byte loss
 func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	defer r.Close()
+	
+	// ⚡ CHANGE: Logic Auto-Restart
 	defer func() {
-		fmt.Printf("H.264 consumer exiting for device %s\n", deviceID)
-		s.StopStreaming(deviceID)
+		// Kiểm tra xem user có chủ động stop không
+		s.mu.RLock()
+		stream, exists := s.streams[deviceID]
+		s.mu.RUnlock()
+
+		if exists && stream.isStreaming {
+			// Nếu stream vẫn được đánh dấu là đang chạy mà bị ngắt -> Restart
+			// log.Printf("⚠️ Stream %s exited. Auto-restarting...", deviceID) // Tắt log để đỡ spam
+			
+			// Xóa stream cũ khỏi map để tránh lỗi "already streaming"
+			s.mu.Lock()
+			delete(s.streams, deviceID)
+			s.mu.Unlock()
+
+			// Restart lại
+			time.Sleep(500 * time.Millisecond) // Nghỉ nhẹ trước khi restart
+			go s.StartStreaming(deviceID)
+		} else {
+			// Nếu là chủ động stop thì dọn dẹp bình thường
+			s.StopStreaming(deviceID)
+		}
 	}()
 
 	fmt.Printf("🎬 H.264 consumer started for device %s (Buffer Strategy)\n", deviceID)
 
-	// Buffer chứa dữ liệu tích lũy
-	accBuf := make([]byte, 0, 1024*1024)
+	// ⚡ Buffer pool để giảm GC
+	var bufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 4096)
+		},
+	}
 
-	// Buffer tạm để đọc từ stream
-	readBuf := make([]byte, 4096)
+	// Buffer chứa dữ liệu tích lũy (giữ nhỏ để tránh copy nhiều)
+	accBuf := make([]byte, 0, 256*1024) // Giảm từ 1MB xuống 256KB
+
+	// Buffer tạm để đọc từ stream (dùng pool)
+	readBuf := bufPool.Get().([]byte)
+	defer bufPool.Put(readBuf)
 
 	frameCount := 0
 	debugDumped := false // Track if we dumped initial bytes
@@ -333,15 +366,19 @@ func findStartCodeIndex(data []byte) int {
 	return -1
 }
 
-// StartAllStreaming starts streaming for all online devices
+// StartAllStreaming starts streaming for all online devices with stagger
 func (s *StreamingService) StartAllStreaming() error {
 	devices := s.deviceManager.GetAllDevices()
 
-	for _, device := range devices {
+	// ⚡ Rải tải: 30ms/thiết bị để tránh CPU spike
+	for i, device := range devices {
 		if device.Status == "online" {
-			if err := s.StartStreaming(device.ID); err != nil {
-				log.Printf("Failed to start streaming for %s: %v", device.ID, err)
-			}
+			go func(idx int, id string) {
+				time.Sleep(time.Duration(30*idx) * time.Millisecond) // 30ms/thiết bị
+				if err := s.StartStreaming(id); err != nil {
+					log.Printf("Failed to start streaming for %s: %v", id, err)
+				}
+			}(i, device.ID)
 		}
 	}
 

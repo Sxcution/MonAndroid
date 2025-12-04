@@ -3,9 +3,11 @@ title MonAndroid Backend Server
 echo Starting MonAndroid Backend...
 echo.
 
-:: Configuration
-set H264_BITRATE=4000000
-set H264_SIZE=1280x720
+:: Configuration - TỐI ƯU CHO 20+ MÁY
+:: 2Mbps cân bằng chất lượng và performance cho grid view
+set H264_BITRATE=2000000
+:: 720p giúp giảm tải CPU decode trên trình duyệt
+set H264_SIZE=720x1280
 
 echo Configuration:
 echo   Bitrate: %H264_BITRATE%

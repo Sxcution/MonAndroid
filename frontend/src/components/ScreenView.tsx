@@ -164,31 +164,44 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                         data: chunkData
                     });
                     
-                    // Chỉ decode nếu hàng đợi không quá đầy (giảm latency)
-                    if (decoderRef.current.decodeQueueSize < 3) {
-                        decoderRef.current.decode(chunk);
-                    } else {
-                        // Nếu hàng đợi đầy, chỉ drop delta, không drop key
-                        if (nalType === 5) decoderRef.current.decode(chunk);
-                        else chunk.close(); // Giải phóng bộ nhớ
+                    // ⚡ FIX: EncodedVideoChunk không có .close() - đảm bảo không gọi .close()
+                    // Thêm drop queue để khỏi nghẽn: drop delta nếu queue > 2
+                    const dec = decoderRef.current;
+                    if (dec && dec.decodeQueueSize > 2 && nalType !== 5 /* not IDR */) {
+                        return; // Drop delta frame nếu queue đầy
+                    }
+
+                    try {
+                        if (dec && dec.state === 'configured') {
+                            // Luôn decode keyframes, delta frames chỉ khi queue < 5
+                            if (dec.decodeQueueSize < 5 || nalType === 5) {
+                                dec.decode(chunk);
+                            }
+                            // ❌ KHÔNG gọi chunk.close() - EncodedVideoChunk không có method này
+                        }
+                    } catch(decodeErr) {
+                        console.error("Decode execution error:", decodeErr);
+                        // Nếu là DataError rời rạc thì bỏ frame là đủ
+                        // Chỉ reset khi decoder chuyển sang 'closed' hoặc lỗi cấu hình
+                        if (decoderRef.current?.state !== 'configured') {
+                            resetDecoder();
+                        }
                     }
                 } catch (e) {
-                    console.error('Decode Error:', e);
-                    // Không reset ngay lập tức để tránh vòng lặp, chỉ log
+                    console.error('Frame processing error:', e);
                 }
             }
         };
 
         const unsubscribe = wsService.subscribe(handleMessage);
 
-        // Chỉ gửi lệnh Start, KHÔNG gửi lệnh Stop khi unmount component con
+        // 🔥 SỬA ĐỔI QUAN TRỌNG:
+        // Chỉ gửi message 'subscribe' qua WebSocket.
+        // XÓA DÒNG fetch(...) đi. Backend sẽ tự Start Stream khi nhận được 'subscribe'.
         wsService.sendMessage({ type: 'subscribe', device_id: device.id });
-        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(()=>{});
 
         return () => {
             unsubscribe();
-            // ⚠️ QUAN TRỌNG: Đã xóa dòng gọi API STOP ở đây.
-            // Stream sẽ tiếp tục chạy nền, giúp chuyển đổi UI mượt mà.
         };
     }, [device.id, active, resetDecoder]);
 
