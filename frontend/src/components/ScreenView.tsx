@@ -161,11 +161,15 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             // Configure decoder if we have both SPS and PPS
             if (decoder.state === 'unconfigured' && spsRef.current && ppsRef.current) {
                 console.log('✅ Configuring decoder with SPS and PPS');
-                const sps = spsRef.current;
-                const pps = ppsRef.current;
-                const description = new Uint8Array(sps.length + pps.length);
-                description.set(sps, 0);
-                description.set(pps, sps.length);
+
+                // Strip start codes from SPS and PPS (WebCodecs needs raw NAL data)
+                const spsRaw = stripStartCode(spsRef.current);
+                const ppsRaw = stripStartCode(ppsRef.current);
+
+                // Create avcC description (concatenate raw SPS + PPS without start codes)
+                const description = new Uint8Array(spsRaw.length + ppsRaw.length);
+                description.set(spsRaw, 0);
+                description.set(ppsRaw, spsRaw.length);
 
                 decoder.configure({
                     codec: 'avc1.42E01E',
@@ -173,8 +177,8 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                     description: description,
                 });
                 console.log('✅ Decoder configured successfully!', {
-                    spsLen: sps.length,
-                    ppsLen: pps.length
+                    spsLen: spsRaw.length,
+                    ppsLen: ppsRaw.length
                 });
             }
 
@@ -316,3 +320,24 @@ function getNALType(nalUnit: Uint8Array): number {
 
     return -1; // Invalid
 }
+
+// Helper: Strip start code from NAL unit (for avcC format)
+function stripStartCode(nalUnit: Uint8Array): Uint8Array {
+    // Find start code
+    let offset = 0;
+    if (nalUnit.length >= 4 && nalUnit[0] === 0 && nalUnit[1] === 0) {
+        if (nalUnit[2] === 1) {
+            offset = 3; // 00 00 01
+        } else if (nalUnit[2] === 0 && nalUnit[3] === 1) {
+            offset = 4; // 00 00 00 01
+        }
+    }
+
+    // Return NAL data without start code
+    if (offset > 0 && offset < nalUnit.length) {
+        return nalUnit.subarray(offset);
+    }
+
+    return nalUnit; // No start code found, return as-is
+}
+

@@ -34,11 +34,20 @@ func main() {
 
 	// Auto-start streaming for all devices in background
 	go func() {
-		log.Println("🚀 Auto-starting H.264 streaming for all devices...")
+		log.Println("🚀 Scanning devices for auto-streaming...")
+		// Scan devices first
+		if err := deviceManager.ScanDevices(); err != nil {
+			log.Printf("Warning: Failed to scan devices: %v", err)
+			return
+		}
+
+		devices := deviceManager.GetAllDevices()
+		log.Printf("📱 Found %d devices, starting H.264 streams...", len(devices))
+
 		if err := streamingService.StartAllStreaming(); err != nil {
 			log.Printf("Warning: Failed to auto-start streaming: %v", err)
 		} else {
-			log.Println("✅ Auto-streaming started successfully")
+			log.Println("✅ Auto-streaming started successfully for all devices")
 		}
 	}()
 

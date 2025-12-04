@@ -139,12 +139,40 @@ func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	readBuf := make([]byte, 4096)
 
 	frameCount := 0
+	debugDumped := false // Track if we dumped initial bytes
 
 	for {
 		// 1. Đọc dữ liệu mới từ stream
 		n, err := r.Read(readBuf)
 		if n > 0 {
 			accBuf = append(accBuf, readBuf[:n]...)
+
+			// DEBUG: Dump first 200 bytes to analyze NAL structure
+			if !debugDumped && len(accBuf) >= 200 {
+				fmt.Printf("🔍 DEBUG: First 200 bytes of H.264 stream:\n")
+				hexStr := fmt.Sprintf("%x", accBuf[:200])
+				for i := 0; i < len(hexStr); i += 64 {
+					end := i + 64
+					if end > len(hexStr) {
+						end = len(hexStr)
+					}
+					fmt.Printf("%s\n", hexStr[i:end])
+				}
+				// Look for NAL types
+				fmt.Printf("\n🔍 Looking for NAL units in first 200 bytes:\n")
+				for i := 0; i < 197; i++ {
+					if accBuf[i] == 0 && accBuf[i+1] == 0 {
+						if accBuf[i+2] == 1 {
+							nalType := accBuf[i+3] & 0x1F
+							fmt.Printf("  Offset %d: Start code 00 00 01, NAL type %d\n", i, nalType)
+						} else if i < 196 && accBuf[i+2] == 0 && accBuf[i+3] == 1 {
+							nalType := accBuf[i+4] & 0x1F
+							fmt.Printf("  Offset %d: Start code 00 00 00 01, NAL type %d\n", i, nalType)
+						}
+					}
+				}
+				debugDumped = true
+			}
 		}
 
 		if err != nil {
@@ -220,12 +248,18 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 	// Broadcast
 	s.wsHub.BroadcastToDevice(deviceID, pkt)
 
-	// Log cho SPS/PPS để debug
-	nalType := nalData[3] & 0x1F
-	if len(nalData) > 4 && nalData[2] == 0 && nalData[3] == 1 { // Start code 00 00 00 01
-		nalType = nalData[4] & 0x1F
-	} else if len(nalData) > 3 && nalData[2] == 1 { // Start code 00 00 01
-		nalType = nalData[3] & 0x1F
+	// Find start code and extract NAL type properly
+	nalType := -1
+	if len(nalData) >= 4 && nalData[0] == 0 && nalData[1] == 0 {
+		if nalData[2] == 1 {
+			// Start code: 00 00 01 (3 bytes)
+			nalType = int(nalData[3] & 0x1F)
+		} else if nalData[2] == 0 && nalData[3] == 1 {
+			// Start code: 00 00 00 01 (4 bytes)
+			if len(nalData) > 4 {
+				nalType = int(nalData[4] & 0x1F)
+			}
+		}
 	}
 
 	if nalType == 7 {
