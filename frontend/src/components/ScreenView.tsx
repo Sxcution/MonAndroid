@@ -4,9 +4,6 @@ import { cn } from '@/utils/helpers';
 import { deviceService } from '@/services/deviceService';
 import { Device } from '@/types/device';
 import { useWebSocket } from '@/services/websocket';
-import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:8080/api';
 
 interface ScreenViewProps {
     device: Device;
@@ -18,39 +15,30 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [fps, setFps] = useState(0);
-    const [latency, setLatency] = useState(0);
     const { lastMessage, sendMessage, isConnected } = useWebSocket();
+    const decoderRef = useRef<VideoDecoder | null>(null);
+    const frameCountRef = useRef(0);
+    const lastFpsUpdateRef = useRef(Date.now());
+    const spsRef = useRef<Uint8Array | null>(null);
+    const ppsRef = useRef<Uint8Array | null>(null);
 
+    // Parse device resolution
     useEffect(() => {
-        // Parse device resolution (e.g., "1080x1920")
         console.log('🔍 Device resolution:', device.resolution);
-        console.log('🔍 Resolution type:', typeof device.resolution);
         if (device.resolution) {
-            // Extract just the resolution part (e.g., "1080x1920" from "1080x1920 Override size")
             const resolutionMatch = device.resolution.match(/(\d+)x(\d+)/);
-            console.log('🔍 Resolution match:', resolutionMatch);
             if (resolutionMatch) {
                 const width = parseInt(resolutionMatch[1]);
                 const height = parseInt(resolutionMatch[2]);
-                console.log('🔍 Parsed dimensions:', { width, height });
-                if (width && height) {
-                    // Scale down for display
-                    const scale = 0.4;
-                    const scaledDims = { width: width * scale, height: height * scale };
-                    console.log('📐 Setting canvas dimensions:', scaledDims);
-                    setDimensions(scaledDims);
-                } else {
-                    console.error('❌ Width or height is 0:', { width, height });
-                }
-            } else {
-                console.error('❌ Failed to match resolution pattern:', device.resolution);
+                const scale = 0.4;
+                const scaledDims = { width: width * scale, height: height * scale };
+                console.log('📐 Setting canvas dimensions:', scaledDims);
+                setDimensions(scaledDims);
             }
-        } else {
-            console.warn('⚠️ No device resolution available!');
         }
     }, [device.resolution]);
 
-    // Failsafe: Manually update canvas dimensions when state changes
+    // Manual canvas dimension setting
     useEffect(() => {
         if (canvasRef.current && dimensions.width > 0 && dimensions.height > 0) {
             console.log('🔧 Manually setting canvas dimensions:', dimensions);
@@ -59,7 +47,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         }
     }, [dimensions]);
 
-    // Start streaming when WebSocket is connected
+    // Start streaming when WebSocket connected
     useEffect(() => {
         if (!isConnected) {
             console.log('⏳ Waiting for WebSocket connection...');
@@ -68,18 +56,18 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
         const startStreaming = async () => {
             try {
-                console.log('✅ WebSocket connected! Starting streaming for:', device.id);
+                console.log('✅ WebSocket connected! Starting H.264 streaming for:', device.id);
 
-                // Subscribe FIRST
+                // Subscribe to device
                 sendMessage({
                     type: 'subscribe',
                     device_id: device.id
                 });
                 console.log('📨 Sent subscribe message');
 
-                // Then start backend streaming
-                await axios.post(`${API_BASE_URL}/streaming/start/${device.id}`);
-                console.log('🎬 Backend streaming started');
+                // Start backend streaming
+                await fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' });
+                console.log('🎬 Backend H.264 streaming started');
             } catch (error) {
                 console.error('❌ Failed to start streaming:', error);
             }
@@ -87,10 +75,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
         startStreaming();
 
-        // Cleanup
         return () => {
             console.log('🛑 Stopping streaming for:', device.id);
-            axios.post(`${API_BASE_URL}/streaming/stop/${device.id}`).catch(console.error);
+            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(console.error);
             sendMessage({
                 type: 'unsubscribe',
                 device_id: device.id
@@ -98,57 +85,125 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         };
     }, [device.id, sendMessage, isConnected]);
 
-    // Handle WebSocket messages (screen frames)
+    // WebCodecs H.264 decoder
     useEffect(() => {
-        if (!lastMessage || !canvasRef.current) {
-            if (!lastMessage) console.log('⏸️ No lastMessage');
-            if (!canvasRef.current) console.log('⏸️ No canvas ref');
-            return;
-        }
+        const canvas = canvasRef.current;
+        if (!canvas) return;
 
-        try {
-            const data = JSON.parse(lastMessage);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
 
-            if (data.type === 'screen_frame' && data.device_id === device.id) {
-                const canvas = canvasRef.current;
-                const ctx = canvas.getContext('2d');
+        // Create VideoDecoder (configure later when we get SPS/PPS)
+        const decoder = new VideoDecoder({
+            output: (frame) => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+                frame.close();
 
-                if (!ctx) {
-                    console.error('❌ Failed to get canvas context!');
-                    return;
+                // Update FPS
+                frameCountRef.current++;
+                const now = Date.now();
+                if (now - lastFpsUpdateRef.current >= 1000) {
+                    setFps(frameCountRef.current);
+                    frameCountRef.current = 0;
+                    lastFpsUpdateRef.current = now;
                 }
+            },
+            error: (e) => console.error('❌ WebCodecs decoder error:', e)
+        });
 
-                // Update FPS and latency
-                if (data.fps) setFps(data.fps);
-                if (data.capture_ms) setLatency(data.capture_ms);
+        // Will be configured when we receive SPS/PPS
+        decoderRef.current = decoder;
+        console.log('📹 WebCodecs decoder created (waiting for SPS/PPS to configure)');
 
-                // Check for empty frame data
-                if (!data.frame || data.frame.length === 0) {
-                    console.error('❌ Empty frame data!');
-                    return;
-                }
+        return () => {
+            try {
+                decoder.close();
+            } catch { }
+        };
+    }, []);
 
-                // Log only every 30 frames to reduce console spam
-                if (data.frame_count % 30 === 0) {
-                    console.log(`📺 Frame: ${data.frame_count}, FPS: ${data.fps}, Canvas: ${canvas.width}x${canvas.height}`);
-                }
+    // Handle WebSocket messages (H.264 binary frames)
+    useEffect(() => {
+        if (!lastMessage || !decoderRef.current) return;
 
-                // Create image from base64
-                const img = new Image();
-                img.onload = () => {
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                };
-                img.onerror = (err) => {
-                    console.error('❌ Image load error:', err, 'Frame:', data.frame_count);
-                };
+        // Binary H.264 frame
+        if (lastMessage instanceof ArrayBuffer) {
+            const buf = new Uint8Array(lastMessage);
 
-                img.src = `data:image/png;base64,${data.frame}`;
+            // Parse length-prefix: [4 bytes big-endian][frame data]
+            if (buf.byteLength < 4) return;
+
+            const len = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
+            if (len <= 0 || 4 + len > buf.byteLength) {
+                console.warn('⚠️ Invalid frame length:', len, 'total:', buf.byteLength);
+                return;
             }
-        } catch (error) {
-            console.error('❌ Failed to process screen frame:', error);
+
+            const frame = buf.subarray(4, 4 + len);
+            console.log(`📦 Received frame: ${len} bytes`);
+            const decoder = decoderRef.current;
+
+            // Extract SPS/PPS if decoder not configured yet
+            if (decoder.state === 'unconfigured') {
+                const { sps, pps } = extractSPSPPS(frame);
+
+                if (sps) spsRef.current = sps;
+                if (pps) ppsRef.current = pps;
+
+                if (spsRef.current && ppsRef.current) {
+                    // Create description from SPS+PPS
+                    const sps = spsRef.current;
+                    const pps = ppsRef.current;
+                    const description = new Uint8Array(sps.length + pps.length);
+                    description.set(sps, 0);
+                    description.set(pps, sps.length);
+
+                    decoder.configure({
+                        codec: 'avc1.42E01E',
+                        optimizeForLatency: true,
+                        description: description,
+                    });
+                    console.log('✅ Decoder configured with SPS/PPS', {
+                        spsLen: sps.length,
+                        ppsLen: pps.length
+                    });
+                } else {
+                    // Wait for both SPS and PPS
+                    return;
+                }
+            }
+
+            // Skip if decoder not ready
+            if (decoder.state !== 'configured') return;
+
+            // Backpressure: skip frame if decoder queue is full
+            if (decoder.decodeQueueSize > 4) {
+                return; // Drop frame to keep latency low
+            }
+
+            // Detect IDR frame (key frame)
+            const type: 'key' | 'delta' = isIDRAnnexB(frame) ? 'key' : 'delta';
+
+            try {
+                const chunk = new EncodedVideoChunk({
+                    type,
+                    timestamp: performance.now() * 1000, // microseconds
+                    data: frame
+                });
+                decoder.decode(chunk);
+            } catch (error) {
+                console.error('❌ Decode error:', error);
+            }
         }
-    }, [lastMessage, device.id]);
+        // JSON message (control/status)
+        else if (typeof lastMessage === 'string') {
+            try {
+                const data = JSON.parse(lastMessage);
+                console.log('📨 JSON message:', data);
+            } catch { }
+        }
+    }, [lastMessage]);
 
     const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!canvasRef.current) return;
@@ -161,7 +216,6 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         const x = Math.floor((e.clientX - rect.left) / rect.width * origWidth);
         const y = Math.floor((e.clientY - rect.top) / rect.height * origHeight);
 
-        // Send tap command
         try {
             await deviceService.tap(device.id, x, y);
         } catch (error) {
@@ -205,7 +259,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             {/* FPS Counter */}
             {fps > 0 && (
                 <div className="absolute top-2 left-2 px-2 py-1 bg-black/70 rounded text-white text-xs font-mono">
-                    {fps} FPS • {latency}ms
+                    {fps} FPS • H.264
                 </div>
             )}
 
@@ -227,10 +281,76 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                 <div className="absolute inset-0 flex items-center justify-center text-white/60">
                     <div className="text-center">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-                        <p>{isConnected ? 'Starting stream...' : 'Connecting...'}</p>
+                        <p>{isConnected ? 'Starting H.264 stream...' : 'Connecting...'}</p>
                     </div>
                 </div>
             )}
         </div>
     );
 };
+
+// Helper: Extract SPS (NAL type 7) and PPS (NAL type 8) from Annex-B frame
+function extractSPSPPS(u8: Uint8Array): { sps: Uint8Array | null; pps: Uint8Array | null } {
+    let sps: Uint8Array | null = null;
+    let pps: Uint8Array | null = null;
+
+    let i = 0;
+    while (i < u8.length - 4) {
+        // Find start code
+        const sc3 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 1;
+        const sc4 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 0 && u8[i + 3] === 1;
+
+        if (!sc3 && !sc4) {
+            i++;
+            continue;
+        }
+
+        const nalStart = i + (sc3 ? 3 : 4);
+        if (nalStart >= u8.length) break;
+
+        const nalType = u8[nalStart] & 0x1F;
+
+        // Find next start code to get NAL length
+        let nalEnd = nalStart + 1;
+        while (nalEnd < u8.length - 3) {
+            if ((u8[nalEnd] === 0 && u8[nalEnd + 1] === 0 && u8[nalEnd + 2] === 1) ||
+                (u8[nalEnd] === 0 && u8[nalEnd + 1] === 0 && u8[nalEnd + 2] === 0 && u8[nalEnd + 3] === 1)) {
+                break;
+            }
+            nalEnd++;
+        }
+        if (nalEnd >= u8.length) nalEnd = u8.length;
+
+        // Extract SPS (type 7) or PPS (type 8)
+        if (nalType === 7 && !sps) {
+            console.log('🔍 Found SPS NAL unit');
+            sps = u8.slice(i, nalEnd); // Include start code
+        } else if (nalType === 8 && !pps) {
+            console.log('🔍 Found PPS NAL unit');
+            pps = u8.slice(i, nalEnd); // Include start code
+        }
+
+        // Stop if we have both
+        if (sps && pps) break;
+
+        i = nalEnd;
+    }
+
+    return { sps, pps };
+}
+
+// Helper: Check if Annex-B frame contains IDR NAL (type 5)
+function isIDRAnnexB(u8: Uint8Array): boolean {
+    for (let i = 0; i + 4 < u8.length; i++) {
+        const sc3 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 1;
+        const sc4 = u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 0 && u8[i + 3] === 1;
+        if (sc3 || sc4) {
+            const off = i + (sc3 ? 3 : 4);
+            if (off < u8.length) {
+                const nal = u8[off] & 0x1F;
+                if (nal === 5) return true; // IDR
+            }
+        }
+    }
+    return false;
+}

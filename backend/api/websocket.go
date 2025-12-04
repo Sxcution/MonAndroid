@@ -5,9 +5,16 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+)
+
+const (
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10 // 54 seconds
 )
 
 var upgrader = websocket.Upgrader{
@@ -15,20 +22,18 @@ var upgrader = websocket.Upgrader{
 		return true // Allow all origins for development
 	},
 	ReadBufferSize:  1024,
-	WriteBufferSize: 1024 * 1024, // 1MB for screen frames
+	WriteBufferSize: 2 * 1024 * 1024, // 2MB for H.264 frames
 }
 
 type Client struct {
 	hub        *WebSocketHub
 	conn       *websocket.Conn
-	send       chan []byte
-	deviceID   string // Subscribe to specific device
+	send       chan []byte // Buffered channel for binary frames
 	subscribed map[string]bool
 }
 
 type WebSocketHub struct {
 	clients    map[*Client]bool
-	broadcast  chan interface{}
 	register   chan *Client
 	unregister chan *Client
 	mu         sync.RWMutex
@@ -37,7 +42,6 @@ type WebSocketHub struct {
 func NewWebSocketHub() *WebSocketHub {
 	return &WebSocketHub{
 		clients:    make(map[*Client]bool),
-		broadcast:  make(chan interface{}, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -60,32 +64,31 @@ func (h *WebSocketHub) Run() {
 			}
 			h.mu.Unlock()
 			log.Printf("Client disconnected (total: %d)", len(h.clients))
-
-		case message := <-h.broadcast:
-			h.mu.RLock()
-			messageBytes, _ := json.Marshal(message)
-			for client := range h.clients {
-				select {
-				case client.send <- messageBytes:
-				default:
-					close(client.send)
-					delete(h.clients, client)
-				}
-			}
-			h.mu.RUnlock()
 		}
 	}
 }
 
-// BroadcastToDevice sends a message to all clients subscribed to a specific device
+// BroadcastToDevice sends message to clients subscribed to a specific device
+// message can be []byte (binary H.264 frame) or map (JSON control message)
 func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	messageBytes, err := json.Marshal(message)
-	if err != nil {
-		log.Printf("Failed to marshal message: %v", err)
-		return
+	var messageBytes []byte
+
+	// Handle both binary and JSON messages
+	switch msg := message.(type) {
+	case []byte:
+		// Binary message (H.264 frame with length prefix)
+		messageBytes = msg
+	default:
+		// JSON message
+		var err error
+		messageBytes, err = json.Marshal(message)
+		if err != nil {
+			log.Printf("Failed to marshal message: %v", err)
+			return
+		}
 	}
 
 	subscribedCount := 0
@@ -96,19 +99,45 @@ func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 			select {
 			case client.send <- messageBytes:
 			default:
-				// Channel full, skip this client
-				log.Printf("⚠️ Client channel full, skipping")
+				// Channel full - drop oldest and try again (backpressure)
+				select {
+				case <-client.send:
+				default:
+				}
+				select {
+				case client.send <- messageBytes:
+				default:
+					log.Printf("⚠️ Client channel full, skipping frame")
+				}
 			}
 		}
 	}
-	
-	log.Printf("📡 WebSocket: Sent %d bytes to %d/%d clients subscribed to device %s", 
-		len(messageBytes), subscribedCount, len(h.clients), deviceID)
+
+	// Only log non-H.264 frames to reduce spam
+	if _, isBinary := message.([]byte); !isBinary {
+		log.Printf("📡 WebSocket: Sent %d bytes to %d/%d clients for device %s",
+			len(messageBytes), subscribedCount, len(h.clients), deviceID)
+	}
 }
 
 // BroadcastToAll sends a message to all connected clients
 func (h *WebSocketHub) BroadcastToAll(message interface{}) {
-	h.broadcast <- message
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("Failed to marshal message: %v", err)
+		return
+	}
+
+	for client := range h.clients {
+		select {
+		case client.send <- messageBytes:
+		default:
+			log.Printf("⚠️ Client channel full, skipping")
+		}
+	}
 }
 
 func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
@@ -121,7 +150,7 @@ func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
 	client := &Client{
 		hub:        hub,
 		conn:       conn,
-		send:       make(chan []byte, 10), // Increased buffer for large frames
+		send:       make(chan []byte, 32), // Buffered for smoother streaming
 		subscribed: make(map[string]bool),
 	}
 
@@ -135,12 +164,19 @@ func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
 	go client.readPump()
 }
 
-// readPump handles incoming messages from the client
+// readPump handles incoming messages from the client (subscriptions)
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
+
+	c.conn.SetReadLimit(1 << 20) // 1MB max message size
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	for {
 		_, message, err := c.conn.ReadMessage()
@@ -166,33 +202,48 @@ func (c *Client) readPump() {
 						delete(c.subscribed, deviceID)
 						log.Printf("Client unsubscribed from device %s", deviceID)
 					}
-				case "ping":
-					// Respond with pong
-					pong := map[string]string{"type": "pong"}
-					if pongBytes, err := json.Marshal(pong); err == nil {
-						c.send <- pongBytes
-					}
 				}
 			}
 		}
 	}
 }
 
-// writePump handles outgoing messages to the client
+// writePump handles outgoing messages to the client (H.264 frames + ping)
 func (c *Client) writePump() {
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		ticker.Stop()
 		c.conn.Close()
 	}()
 
 	for {
 		select {
-		case message, ok := <-c.send:
+		case frame, ok := <-c.send:
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+			// Detect if this is binary (H.264 with length prefix) or JSON
+			isBinary := len(frame) > 4 && (frame[0] != '{' && frame[0] != '[')
+
+			if isBinary {
+				// Send as BinaryMessage
+				if err := c.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+					return
+				}
+			} else {
+				// Send as TextMessage (JSON)
+				if err := c.conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+					return
+				}
+			}
+
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}

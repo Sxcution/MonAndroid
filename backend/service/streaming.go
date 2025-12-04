@@ -1,16 +1,21 @@
 package service
 
 import (
+	"bufio"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
+	"os/exec"
 	"sync"
 	"time"
 )
 
 // WebSocketBroadcaster interface to avoid import cycle
+// Supports both binary ([]byte) and JSON (interface{}) messages
 type WebSocketBroadcaster interface {
-	BroadcastToDevice(deviceID string, message interface{})
+	BroadcastToDevice(deviceID string, message interface{}) // Can be []byte or map
 	BroadcastToAll(message interface{})
 }
 
@@ -30,6 +35,7 @@ type deviceStream struct {
 	stopChan    chan bool
 	fps         int
 	lastFrame   time.Time
+	h264Cmd     *exec.Cmd // H.264 screenrecord process
 }
 
 // NewStreamingService creates a new streaming service
@@ -47,6 +53,8 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	log.Printf("🚀 StartStreaming called for %s", deviceID)
+
 	// Check if already streaming - if yes, just return success (idempotent)
 	if stream, exists := s.streams[deviceID]; exists && stream.isStreaming {
 		log.Printf("Device %s is already streaming, returning success", deviceID)
@@ -56,11 +64,20 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 	// Get device info
 	device := s.deviceManager.GetDevice(deviceID)
 	if device == nil {
+		log.Printf("❌ Device not found in manager: %s", deviceID)
 		return fmt.Errorf("device not found: %s", deviceID)
 	}
 
 	if device.Status != "online" {
 		return fmt.Errorf("device offline: %s", deviceID)
+	}
+
+	// Start H.264 stream from ADB
+	adbClient := s.deviceManager.GetADBClient()
+	h264Stream, cmd, err := adbClient.StartH264Stream(device.ADBDeviceID)
+	if err != nil {
+		log.Printf("❌ Failed to start H.264 stream for %s: %v", deviceID, err)
+		return fmt.Errorf("failed to start H.264 stream: %w", err)
 	}
 
 	// Create stream
@@ -70,14 +87,15 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 		isStreaming: true,
 		stopChan:    make(chan bool),
 		fps:         30, // Target 30 FPS
+		h264Cmd:     cmd,
 	}
 
 	s.streams[deviceID] = stream
 
-	// Start streaming goroutine
-	go s.streamDevice(stream)
+	// Start H.264 consumer goroutine
+	go s.consumeH264(deviceID, h264Stream)
 
-	log.Printf("Started streaming for device %s", deviceID)
+	fmt.Printf("Started H.264 streaming for device %s\n", deviceID)
 	return nil
 }
 
@@ -93,10 +111,200 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 
 	stream.isStreaming = false
 	close(stream.stopChan)
+
+	// Kill H.264 screenrecord process if running
+	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
+		if err := stream.h264Cmd.Process.Kill(); err != nil {
+			log.Printf("Warning: failed to kill H.264 process for %s: %v", deviceID, err)
+		}
+	}
+
 	delete(s.streams, deviceID)
 
 	log.Printf("Stopped streaming for device %s", deviceID)
 	return nil
+}
+
+// consumeH264 reads H.264 stream, parses NAL units, and broadcasts frames
+func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
+	defer r.Close()
+	defer func() {
+		// Clean up stream on exit
+		fmt.Printf("H.264 consumer exiting for device %s\n", deviceID)
+		s.StopStreaming(deviceID)
+	}()
+
+	fmt.Printf("🎬 H.264 consumer started for device %s\n", deviceID)
+
+	br := bufio.NewReaderSize(r, 1<<20) // 1MB buffer
+	frameCount := 0
+
+	fmt.Printf("⏳ Waiting for first byte from %s...\n", deviceID)
+	firstByte, err := br.Peek(1)
+	if err != nil {
+		fmt.Printf("❌ Failed to peek first byte for %s: %v\n", deviceID, err)
+		return
+	}
+	fmt.Printf("✅ Received first byte: %x\n", firstByte)
+
+	for {
+		// Read next Annex-B frame (bundle of NALs until next keyframe/P-frame)
+		frame, err := readNextAnnexBFrame(br)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Error reading H.264 frame for %s: %v", deviceID, err)
+			} else {
+				log.Printf("EOF reading H.264 frame for %s", deviceID)
+			}
+			return
+		}
+
+		if len(frame) == 0 {
+			continue
+		}
+
+		frameCount++
+
+		// Prefix frame with 4-byte big-endian length
+		pkt := make([]byte, 4+len(frame))
+		binary.BigEndian.PutUint32(pkt[:4], uint32(len(frame)))
+		copy(pkt[4:], frame)
+
+		// Broadcast to WebSocket with backpressure handling
+		s.wsHub.BroadcastToDevice(deviceID, pkt)
+
+		// Log every 30 frames (~1 second at 30 FPS)
+		if frameCount < 5 {
+			fmt.Printf("📦 Sent frame %d: %d bytes (Hex: %x...)\n", frameCount, len(frame), frame[:min(len(frame), 20)])
+		} else if frameCount%30 == 0 {
+			fmt.Printf("📺 Device %s: Frame %d\n", deviceID, frameCount)
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// readNextAnnexBFrame reads NAL units from Annex-B stream until complete frame
+// Returns frame bytes (including start codes) or error
+func readNextAnnexBFrame(br *bufio.Reader) ([]byte, error) {
+	var frame []byte
+	nalCount := 0
+
+	for {
+		// Look for start code: 00 00 01 or 00 00 00 01
+		startCode, err := findStartCode(br)
+		if err != nil {
+			if len(frame) > 0 {
+				return frame, nil // Return accumulated frame
+			}
+			return nil, err
+		}
+
+		// Read NAL unit header (1 byte after start code)
+		nalHeader, err := br.ReadByte()
+		if err != nil {
+			return frame, err
+		}
+
+		nalType := nalHeader & 0x1F
+
+		// Start new frame or continue current?
+		// IDR (5) or Non-IDR (1) = new frame if we already have NALs
+		if (nalType == 5 || nalType == 1) && nalCount > 0 {
+			// Unread the start code and NAL header for next read
+			for i := len(startCode) - 1; i >= 0; i-- {
+				br.UnreadByte()
+			}
+			br.UnreadByte()
+			return frame, nil
+		}
+
+		// Add start code + NAL header to frame
+		frame = append(frame, startCode...)
+		frame = append(frame, nalHeader)
+
+		// Read rest of NAL until next start code
+		nalData, err := readUntilStartCode(br)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		frame = append(frame, nalData...)
+		nalCount++
+
+		if err == io.EOF {
+			return frame, nil
+		}
+	}
+}
+
+// findStartCode finds next Annex-B start code (00 00 01 or 00 00 00 01)
+func findStartCode(br *bufio.Reader) ([]byte, error) {
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+
+		if b != 0x00 {
+			continue
+		}
+
+		// Peek next bytes
+		peek, err := br.Peek(3)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+
+		if len(peek) >= 2 && peek[0] == 0x00 && peek[1] == 0x01 {
+			// Found 00 00 01
+			br.Discard(2)
+			return []byte{0x00, 0x00, 0x01}, nil
+		}
+
+		if len(peek) >= 3 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
+			// Found 00 00 00 01
+			br.Discard(3)
+			return []byte{0x00, 0x00, 0x00, 0x01}, nil
+		}
+	}
+}
+
+// readUntilStartCode reads until next start code (not including it)
+func readUntilStartCode(br *bufio.Reader) ([]byte, error) {
+	var data []byte
+
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return data, err
+		}
+
+		data = append(data, b)
+
+		// Check if we're at start of a start code
+		if b == 0x00 && len(data) >= 3 {
+			tail := data[len(data)-3:]
+			if tail[0] == 0x00 && tail[1] == 0x00 {
+				// Peek next byte
+				next, err := br.Peek(1)
+				if err == nil && len(next) > 0 && (next[0] == 0x01 || next[0] == 0x00) {
+					// Unread the 00 00 we just read (part of start code)
+					br.UnreadByte()
+					data = data[:len(data)-1]
+					if len(data) > 0 && data[len(data)-1] == 0x00 {
+						br.UnreadByte()
+						data = data[:len(data)-1]
+					}
+					return data, nil
+				}
+			}
+		}
+	}
 }
 
 // streamDevice handles the streaming loop for a single device

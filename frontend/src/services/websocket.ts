@@ -3,7 +3,7 @@ import { WS_URL } from '@/utils/constants';
 
 export function useWebSocket() {
     const [isConnected, setIsConnected] = useState(false);
-    const [lastMessage, setLastMessage] = useState<string | null>(null);
+    const [lastMessage, setLastMessage] = useState<string | ArrayBuffer | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
 
     useEffect(() => {
@@ -14,6 +14,7 @@ export function useWebSocket() {
             if (!isComponentMounted) return;
 
             const ws = new WebSocket(WS_URL);
+            ws.binaryType = 'arraybuffer'; // Important: receive binary as ArrayBuffer
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -22,6 +23,7 @@ export function useWebSocket() {
             };
 
             ws.onmessage = (event) => {
+                // Handle both binary (ArrayBuffer) and text (string) messages
                 setLastMessage(event.data);
             };
 

@@ -4,6 +4,8 @@ import (
 	"androidcontrol/models"
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -28,6 +30,8 @@ func (c *ADBClient) ListDevices() ([]models.Device, error) {
 		return nil, fmt.Errorf("failed to list devices: %w", err)
 	}
 
+	fmt.Println("📱 ADB Output:")
+	fmt.Println(string(output))
 	return c.parseDeviceList(string(output))
 }
 
@@ -43,7 +47,6 @@ func (c *ADBClient) parseDeviceList(output string) ([]models.Device, error) {
 		}
 
 		// Expected format: <serial> <state> [device info]
-		// Example: emulator-5554    device product:sdk_google_phone_x86 model:Android_SDK_built_for_x86 device:generic_x86
 		parts := strings.Fields(line)
 		if len(parts) < 2 {
 			continue
@@ -52,8 +55,11 @@ func (c *ADBClient) parseDeviceList(output string) ([]models.Device, error) {
 		serial := parts[0]
 		state := parts[1]
 
+		fmt.Printf("🔍 Found device: Serial=%s, State=%s\n", serial, state)
+
 		// Only include devices that are online
 		if state != "device" {
+			fmt.Printf("⚠️ Skipping device %s because state is %s\n", serial, state)
 			continue
 		}
 
@@ -181,6 +187,46 @@ func (c *ADBClient) ScreenCapture(deviceID string) ([]byte, error) {
 	}
 
 	return stdout.Bytes(), nil
+}
+
+// StartH264Stream starts hardware-encoded H.264 streaming using screenrecord
+// Returns io.ReadCloser for streaming raw H.264 data, and *exec.Cmd for process control
+func (c *ADBClient) StartH264Stream(deviceID string) (io.ReadCloser, *exec.Cmd, error) {
+	// Get config from env with defaults
+	bitrate := getEnv("H264_BITRATE", "4000000") // 4 Mbps default
+	size := getEnv("H264_SIZE", "1280x720")      // 720p default
+
+	// Build screenrecord command with H.264 output
+	cmd := exec.Command(c.ADBPath, "-s", deviceID, "exec-out",
+		"screenrecord",
+		"--output-format=h264",
+		"--bit-rate="+bitrate,
+		"--size="+size,
+		"-") // stdout
+
+	// Get stdout pipe for streaming
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	// Capture stderr for debugging
+	cmd.Stderr = os.Stderr
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return nil, nil, fmt.Errorf("failed to start screenrecord: %w", err)
+	}
+
+	return stdout, cmd, nil
+}
+
+// getEnv gets environment variable with fallback default
+func getEnv(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
 }
 
 // SendTap sends a tap event to the device
