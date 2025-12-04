@@ -13,7 +13,7 @@ interface ScreenViewProps {
 export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+    const [dimensions, setDimensions] = useState({ width: 288, height: 600 });
     const [fps, setFps] = useState(0);
     const { lastMessage, sendMessage, isConnected } = useWebSocket();
     const decoderRef = useRef<VideoDecoder | null>(null);
@@ -35,6 +35,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                 console.log('📐 Setting canvas dimensions:', scaledDims);
                 setDimensions(scaledDims);
             }
+        } else {
+            // Fallback nếu chưa có resolution
+            setDimensions({ width: 288, height: 600 });
         }
     }, [device.resolution]);
 
@@ -160,23 +163,32 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
             // Configure decoder if we have both SPS and PPS
             if (decoder.state === 'unconfigured' && spsRef.current && ppsRef.current) {
-                console.log('✅ Configuring decoder with SPS and PPS');
-
-                // Strip start codes from SPS and PPS (WebCodecs needs raw NAL data)
+                // 1. Lấy RAW NAL (đã loại bỏ start code)
                 const spsRaw = stripStartCode(spsRef.current);
                 const ppsRaw = stripStartCode(ppsRef.current);
 
-                // Create proper avcC binary structure [CRITICAL FIX]
+                // 2. Tự động tạo chuỗi Codec từ SPS bytes
+                // Byte 1: Profile, Byte 2: Compatibility, Byte 3: Level
+                const profileIdc = spsRaw[1].toString(16).padStart(2, '0').toUpperCase();
+                const profileComp = spsRaw[2].toString(16).padStart(2, '0').toUpperCase();
+                const levelIdc = spsRaw[3].toString(16).padStart(2, '0').toUpperCase();
+                
+                // Chuỗi codec chuẩn: avc1.PPCCLL (Ví dụ: avc1.4D002A cho Main Profile)
+                const codecString = `avc1.${profileIdc}${profileComp}${levelIdc}`;
+
+                console.log(`🔍 Codec detected: ${codecString}`);
+
+                // 3. Tạo avcC binary config
                 const description = createAVCDecoderConfigurationRecord(spsRaw, ppsRaw);
 
-                // Configure decoder
                 try {
                     decoder.configure({
-                        codec: 'avc1.42E01E',
+                        codec: codecString, // ✅ Dùng codec động
                         optimizeForLatency: true,
                         description: description,
                     });
                     console.log('✅ Decoder configured successfully!', {
+                        codec: codecString,
                         spsLen: spsRaw.length,
                         ppsLen: ppsRaw.length,
                         avcCLen: description.length
@@ -350,38 +362,32 @@ function stripStartCode(nalUnit: Uint8Array): Uint8Array {
  * Reference: ISO/IEC 14496-15
  */
 function createAVCDecoderConfigurationRecord(sps: Uint8Array, pps: Uint8Array): Uint8Array {
-    // Extract profile/compatibility/level from SPS
-    // SPS[0] = NAL header, SPS[1] = Profile, SPS[2] = Compatibility, SPS[3] = Level
     const profileIndication = sps[1];
     const profileCompatibility = sps[2];
     const levelIndication = sps[3];
-    const lengthSizeMinusOne = 3; // 4 bytes length prefix (value = 3)
+    const lengthSizeMinusOne = 3; 
 
-    // Calculate total buffer size
-    // Header (5) + SPS Count (1) + SPS Length (2) + SPS data + PPS Count (1) + PPS Length (2) + PPS data
     const bodyLength = 5 + 1 + 2 + sps.length + 1 + 2 + pps.length;
     const buf = new Uint8Array(bodyLength);
     const view = new DataView(buf.buffer);
 
     let offset = 0;
-
-    // avcC header
-    buf[offset++] = 1; // configurationVersion
+    buf[offset++] = 1; // version
     buf[offset++] = profileIndication;
     buf[offset++] = profileCompatibility;
     buf[offset++] = levelIndication;
-    buf[offset++] = 0xfc | lengthSizeMinusOne; // 11111100 | 3
+    buf[offset++] = 0xFF; // lengthSizeMinusOne (set full 1s for reserved bits)
 
-    // SPS array
-    buf[offset++] = 0xe0 | 1; // 11100000 | 1 (numOfSequenceParameterSets = 1)
-    view.setUint16(offset, sps.length, false); // Big-endian SPS length
+    // SPS
+    buf[offset++] = 0xE1; // numOfSequenceParameterSets = 1
+    view.setUint16(offset, sps.length, false);
     offset += 2;
     buf.set(sps, offset);
     offset += sps.length;
 
-    // PPS array
+    // PPS
     buf[offset++] = 1; // numOfPictureParameterSets = 1
-    view.setUint16(offset, pps.length, false); // Big-endian PPS length
+    view.setUint16(offset, pps.length, false);
     offset += 2;
     buf.set(pps, offset);
 
