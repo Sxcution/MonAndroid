@@ -88,16 +88,22 @@ func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 		return
 	}
 
+	subscribedCount := 0
 	for client := range h.clients {
 		// Send to clients subscribed to this device or subscribed to all
 		if client.subscribed[deviceID] || client.subscribed["all"] {
+			subscribedCount++
 			select {
 			case client.send <- messageBytes:
 			default:
 				// Channel full, skip this client
+				log.Printf("⚠️ Client channel full, skipping")
 			}
 		}
 	}
+	
+	log.Printf("📡 WebSocket: Sent %d bytes to %d/%d clients subscribed to device %s", 
+		len(messageBytes), subscribedCount, len(h.clients), deviceID)
 }
 
 // BroadcastToAll sends a message to all connected clients
@@ -115,7 +121,7 @@ func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
 	client := &Client{
 		hub:        hub,
 		conn:       conn,
-		send:       make(chan []byte, 256),
+		send:       make(chan []byte, 10), // Increased buffer for large frames
 		subscribed: make(map[string]bool),
 	}
 

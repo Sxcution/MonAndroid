@@ -100,10 +100,14 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 
 // streamDevice handles the streaming loop for a single device
 func (s *StreamingService) streamDevice(stream *deviceStream) {
+	log.Printf("🟢 STREAM GOROUTINE STARTED for device: %s (ADB: %s)", stream.deviceID, stream.deviceADBID)
+	
 	// Calculate frame interval for target FPS
 	frameInterval := time.Duration(1000/stream.fps) * time.Millisecond
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
+	
+	log.Printf("🟢 TICKER CREATED: capturing every %dms (target %d FPS)", frameInterval.Milliseconds(), stream.fps)
 
 	adbClient := s.deviceManager.GetADBClient()
 	frameCount := 0
@@ -118,9 +122,11 @@ func (s *StreamingService) streamDevice(stream *deviceStream) {
 
 		case <-ticker.C:
 			// Capture screen
+			log.Printf("📸 Attempting screen capture for %s...", stream.deviceID)
 			startTime := time.Now()
 			frameBytes, err := adbClient.ScreenCapture(stream.deviceADBID)
 			captureTime := time.Since(startTime)
+			log.Printf("📸 Capture completed: %d bytes, took %dms", len(frameBytes), captureTime.Milliseconds())
 
 			if err != nil {
 				errorCount++
@@ -162,7 +168,9 @@ func (s *StreamingService) streamDevice(stream *deviceStream) {
 			}
 
 			// Broadcast to WebSocket clients
+			log.Printf("📡 Broadcasting frame to WebSocket clients for %s", stream.deviceID)
 			s.wsHub.BroadcastToDevice(stream.deviceID, message)
+			log.Printf("📡 Broadcast completed")
 
 			// Log every 30 frames (~1 second)
 			if frameCount%30 == 0 {

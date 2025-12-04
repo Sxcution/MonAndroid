@@ -38,7 +38,7 @@ function App() {
     const loadDevices = async () => {
         setIsScanning(true);
         try {
-            const deviceList = await api.device.getDevices();
+            const deviceList = await api.device.scanDevices();
             setDevices(deviceList);
         } catch (error) {
             console.error('Failed to load devices:', error);

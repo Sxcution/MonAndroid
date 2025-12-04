@@ -19,7 +19,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [fps, setFps] = useState(0);
     const [latency, setLatency] = useState(0);
-    const { lastMessage, sendMessage } = useWebSocket();
+    const { lastMessage, sendMessage, isConnected } = useWebSocket();
 
     useEffect(() => {
         // Parse device resolution (e.g., "1080x1920")
@@ -33,34 +33,44 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
         }
     }, [device.resolution]);
 
-    // Start streaming when component mounts
+    // Start streaming when WebSocket is connected
     useEffect(() => {
+        if (!isConnected) {
+            console.log('⏳ Waiting for WebSocket connection...');
+            return;
+        }
+
         const startStreaming = async () => {
             try {
-                await axios.post(`${API_BASE_URL}/streaming/start/${device.id}`);
-                console.log('Started streaming for device:', device.id);
+                console.log('✅ WebSocket connected! Starting streaming for:', device.id);
 
-                // Subscribe to this device's frames
+                // Subscribe FIRST
                 sendMessage({
                     type: 'subscribe',
                     device_id: device.id
                 });
+                console.log('📨 Sent subscribe message');
+
+                // Then start backend streaming
+                await axios.post(`${API_BASE_URL}/streaming/start/${device.id}`);
+                console.log('🎬 Backend streaming started');
             } catch (error) {
-                console.error('Failed to start streaming:', error);
+                console.error('❌ Failed to start streaming:', error);
             }
         };
 
         startStreaming();
 
-        // Cleanup: stop streaming when unmounting
+        // Cleanup
         return () => {
+            console.log('🛑 Stopping streaming for:', device.id);
             axios.post(`${API_BASE_URL}/streaming/stop/${device.id}`).catch(console.error);
             sendMessage({
                 type: 'unsubscribe',
                 device_id: device.id
             });
         };
-    }, [device.id, sendMessage]);
+    }, [device.id, sendMessage, isConnected]);
 
     // Handle WebSocket messages (screen frames)
     useEffect(() => {
@@ -70,6 +80,8 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             const data = JSON.parse(lastMessage);
 
             if (data.type === 'screen_frame' && data.device_id === device.id) {
+                console.log('📺 Received frame:', data.frame_count, 'FPS:', data.fps);
+
                 const canvas = canvasRef.current;
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return;
@@ -84,10 +96,13 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 };
+                img.onerror = (err) => {
+                    console.error('❌ Image load error:', err);
+                };
                 img.src = `data:image/png;base64,${data.frame}`;
             }
         } catch (error) {
-            console.error('Failed to process screen frame:', error);
+            console.error('❌ Failed to process screen frame:', error);
         }
     }, [lastMessage, device.id]);
 
@@ -168,7 +183,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                 <div className="absolute inset-0 flex items-center justify-center text-white/60">
                     <div className="text-center">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-                        <p>Starting stream...</p>
+                        <p>{isConnected ? 'Starting stream...' : 'Connecting...'}</p>
                     </div>
                 </div>
             )}

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { DeviceCard } from './DeviceCard';
 import { Loader2 } from 'lucide-react';
@@ -11,7 +11,10 @@ export const DeviceGrid: React.FC = () => {
         selectDevice,
     } = useAppStore();
 
-    if (devices.length === 0) {
+    // TEMP: Show only 1 device for testing streaming
+    const displayDevices = devices.slice(0, 1);
+
+    if (displayDevices.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center h-full p-8 text-center">
                 <Loader2 className="w-12 h-12 animate-spin text-primary mb-4" />
@@ -25,7 +28,7 @@ export const DeviceGrid: React.FC = () => {
 
     return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 p-4">
-            {devices.map((device) => (
+            {displayDevices.map((device) => (
                 <DeviceCard
                     key={device.id}
                     device={device}

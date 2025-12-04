@@ -1,7 +1,8 @@
 import React from 'react';
 import { Device } from '@/types/device';
 import { cn, formatBattery, getBatteryColor, getStatusColor } from '@/utils/helpers';
-import { Smartphone, Battery, Wifi, WifiOff } from 'lucide-react';
+import { Battery, Wifi, WifiOff } from 'lucide-react';
+import { ScreenView } from './ScreenView';
 
 interface DeviceCardProps {
     device: Device;
@@ -31,7 +32,7 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
             {/* Selection checkbox */}
             {onSelect && (
                 <div
-                    className="absolute top-2 right-2"
+                    className="absolute top-2 right-2 z-10"
                     onClick={(e) => {
                         e.stopPropagation();
                         onSelect();
@@ -46,19 +47,9 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
                 </div>
             )}
 
-            {/* Screen preview */}
+            {/* Live screen streaming */}
             <div className="aspect-[9/16] bg-black rounded-md mb-3 overflow-hidden">
-                {device.frame ? (
-                    <img
-                        src={`data:image/png;base64,${device.frame}`}
-                        alt="Device screen"
-                        className="w-full h-full object-contain"
-                    />
-                ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-500">
-                        <Smartphone size={48} />
-                    </div>
-                )}
+                <ScreenView device={device} className="w-full h-full" />
             </div>
 
             {/* Device info */}
@@ -97,10 +88,12 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
             </div>
 
             {/* Online indicator */}
-            <div className={cn(
-                'absolute bottom-2 left-2 w-2 h-2 rounded-full',
-                isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
-            )} />
+            <div
+                className={cn(
+                    'absolute bottom-2 left-2 w-2 h-2 rounded-full',
+                    isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                )}
+            />
         </div>
     );
 };
