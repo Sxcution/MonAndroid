@@ -2,14 +2,12 @@ package service
 
 import (
 	"bufio"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"os/exec"
 	"sync"
-	"time"
 )
 
 // WebSocketBroadcaster interface to avoid import cycle
@@ -34,7 +32,6 @@ type deviceStream struct {
 	isStreaming bool
 	stopChan    chan bool
 	fps         int
-	lastFrame   time.Time
 	h264Cmd     *exec.Cmd // H.264 screenrecord process
 }
 
@@ -190,225 +187,145 @@ func min(a, b int) int {
 }
 
 // readNextAnnexBFrame reads NAL units from Annex-B stream until complete frame
-// Returns frame bytes (including start codes) or error
 func readNextAnnexBFrame(br *bufio.Reader) ([]byte, error) {
 	var frame []byte
 	nalCount := 0
+	hasVideoFrame := false // Track if we've seen IDR(5) or Slice(1) in current frame
 
 	for {
-		// 1. Skip garbage until we find a start code (PEEK only)
-		startCodeLen := 0
-		for {
-			// Peek enough bytes to detect 00 00 00 01
-			peek, err := br.Peek(4)
-			if err != nil && err != io.EOF {
-				return frame, err
-			}
-			if len(peek) < 3 {
-				// Not enough data to determine start code, wait for more or EOF
-				if err == io.EOF {
-					return frame, nil // End of stream
-				}
-				// Should not happen if err != EOF
-				return frame, io.ErrUnexpectedEOF
-			}
-
-			if peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
-				startCodeLen = 3
-				break
-			}
-			if len(peek) >= 4 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x00 && peek[3] == 0x01 {
-				startCodeLen = 4
-				break
-			}
-
-			// Not a start code, consume one byte (garbage)
-			b, err := br.ReadByte()
-			if err != nil {
-				return frame, err
-			}
-			// Only append garbage if we are inside a frame?
-			// Usually garbage between frames is ignored.
-			// But if we are in the middle of a frame (nalCount > 0), we shouldn't have garbage between NALs ideally.
-			// For safety, we ignore garbage between NALs.
-			_ = b
-		}
-
-		// 2. We found a start code at current position. Check NAL type.
-		// We need to peek the byte AFTER the start code.
-		peekHeader, err := br.Peek(startCodeLen + 1)
+		// 1. Tìm start code của NAL unit hiện tại (không consume bytes nếu chưa chắc)
+		// Start code: 00 00 01 (3 bytes) hoặc 00 00 00 01 (4 bytes)
+		startCodeLen, err := peekStartCode(br)
 		if err != nil {
-			return frame, err
-		}
-		nalHeader := peekHeader[startCodeLen]
-		nalType := nalHeader & 0x1F
-
-		// DEBUG LOGGING
-		// log.Printf("Found NAL: Type=%d, StartCodeLen=%d, CurrentFrameLen=%d", nalType, startCodeLen, len(frame))
-
-		// 3. Check if this NAL starts a new frame
-		// IDR (5) or Non-IDR (1) = new frame if we already have NALs
-		if (nalType == 5 || nalType == 1) && nalCount > 0 {
-			// log.Printf("New frame detected (Type %d), returning accumulated frame with %d NALs", nalType, nalCount)
-			// We found the start of the NEXT frame.
-			// Return what we have so far. We leave the start code in the buffer.
-			return frame, nil
-		}
-
-		// 4. Consume start code and NAL header
-		discarded, err := br.Discard(startCodeLen + 1)
-		if err != nil {
-			return frame, err
-		}
-		if discarded != startCodeLen+1 {
-			return frame, io.ErrUnexpectedEOF
-		}
-
-		// Append to frame
-		if startCodeLen == 3 {
-			frame = append(frame, 0x00, 0x00, 0x01)
-		} else {
-			frame = append(frame, 0x00, 0x00, 0x00, 0x01)
-		}
-		frame = append(frame, nalHeader)
-
-		// 5. Read rest of NAL until next start code
-		nalData, err := readUntilStartCode(br)
-		if err != nil && err != io.EOF {
+			if len(frame) > 0 && err == io.EOF {
+				return frame, nil
+			}
 			return nil, err
 		}
-		frame = append(frame, nalData...)
-		nalCount++
 
-		// log.Printf("Appended NAL Type %d, Size %d. Total Frame Size: %d", nalType, len(nalData), len(frame))
+		// Nếu không tìm thấy start code ngay đầu buffer -> data rác hoặc lỗi stream -> skip 1 byte rồi thử lại
+		if startCodeLen == 0 {
+			b, err := br.ReadByte()
+			if err != nil {
+				return nil, err
+			}
+			// Chỉ append vào frame nếu đang ở giữa frame (đã có NAL trước đó)
+			if nalCount > 0 {
+				frame = append(frame, b)
+			}
+			continue
+		}
 
-		if err == io.EOF {
+		// 2. Đọc Start Code + NAL Header
+		// Peek NAL Header trước để check loại (TRƯỚC KHI consume start code)
+		peekBuf, err := br.Peek(startCodeLen + 1)
+		if err != nil {
+			if len(frame) > 0 && err == io.EOF {
+				return frame, nil
+			}
+			return nil, err
+		}
+		nalHeader := peekBuf[startCodeLen]
+		nalType := nalHeader & 0x1F
+
+		// 3. Check nếu đây là video frame MỚI (IDR/Slice) và ta đã có video frame trước đó -> Return
+		isVideoFrame := (nalType == 1 || nalType == 5)
+		if isVideoFrame && hasVideoFrame {
+			// Đã có video frame rồi, gặp video frame mới -> Kết thúc frame hiện tại
 			return frame, nil
 		}
-	}
-}
 
-// findStartCode is no longer used by readNextAnnexBFrame but kept if needed or we can remove it.
-// Since I am replacing the block, I will remove it to avoid dead code if it's not used elsewhere.
-// Checking file... findStartCode was only used in readNextAnnexBFrame.
-
-// readUntilStartCode reads until next start code (not including it)
-func readUntilStartCode(br *bufio.Reader) ([]byte, error) {
-	var data []byte
-
-	for {
-		// Peek to see if we are at a start code
-		peek, err := br.Peek(4)
-		// If we have fewer than 3 bytes, we can't be at a start code yet (unless EOF)
-		if len(peek) >= 3 {
-			if peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x01 {
-				return data, nil
-			}
-			if len(peek) >= 4 && peek[0] == 0x00 && peek[1] == 0x00 && peek[2] == 0x00 && peek[3] == 0x01 {
-				return data, nil
-			}
+		// 4. Consume start code
+		startCode := make([]byte, startCodeLen)
+		if _, err := io.ReadFull(br, startCode); err != nil {
+			return nil, err
 		}
 
-		if err == io.EOF {
-			// If EOF, we return what we have
-			// But wait, if we have 00 00 at the end, and then EOF?
-			// It's not a start code. So we consume it.
-			// But Peek returns EOF if it can't fill the buffer.
-			// We should read the available bytes.
-		} else if err != nil {
-			return data, err
-		}
-
-		// Not a start code, read one byte
-		b, err := br.ReadByte()
+		// Consume NAL header
+		headerByte, err := br.ReadByte()
 		if err != nil {
-			return data, err
+			return nil, err
 		}
-		data = append(data, b)
+
+		// Append start code + header vào frame
+		frame = append(frame, startCode...)
+		frame = append(frame, headerByte)
+
+		// 5. Đọc phần data còn lại của NAL cho đến khi gặp Start Code tiếp theo
+		for {
+			// Peek 3-4 bytes để xem có phải start code mới không
+			nextScLen, _ := peekStartCode(br)
+			if nextScLen > 0 {
+				// Tìm thấy start code mới -> Kết thúc NAL unit này
+				break
+			}
+
+			// Không phải start code, đọc 1 byte data
+			b, err := br.ReadByte()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+			frame = append(frame, b)
+		}
+
+		nalCount++
+
+		// DEBUG: Log NAL type
+		log.Printf("📝 NAL #%d: Type=%d, Size=%d bytes total, hasVideoFrame=%v", nalCount, nalType, len(frame), hasVideoFrame)
+
+		// Mark if we just read a video frame
+		if isVideoFrame {
+			hasVideoFrame = true
+			log.Printf("✅ Marked hasVideoFrame=true after NAL type %d", nalType)
+		}
+
+		// 6. Check nếu hết stream HOẶC nếu có NAL tiếp theo
+		nextScLen, err := peekStartCode(br)
+		if err == io.EOF || nextScLen == 0 {
+			// Hết stream hoặc buffer tạm thời trống
+			if hasVideoFrame {
+				// Đã có video frame (IDR/Slice) rồi -> Đủ để return
+				log.Printf("🔚 No more NAL units, returning complete frame with %d NAL(s), total %d bytes", nalCount, len(frame))
+				return frame, nil
+			}
+			// Chưa có video frame -> Đây chỉ là SPS/PPS, cần đợi thêm data
+			log.Printf("⏸ Buffer empty but no video frame yet (nalCount=%d), waiting for more data...", nalCount)
+			// Đợi một chút để buffer fill
+			_, err := br.Peek(1)
+			if err == io.EOF {
+				// Thực sự hết stream luôn
+				if len(frame) > 0 {
+					log.Printf("⚠️ EOF reached with incomplete frame (%d bytes), returning anyway", len(frame))
+					return frame, nil
+				}
+				return nil, io.EOF
+			}
+			// Có data mới rồi, continue loop để đọc NAL tiếp theo
+			continue
+		}
 	}
 }
 
-// streamDevice handles the streaming loop for a single device
-func (s *StreamingService) streamDevice(stream *deviceStream) {
-	log.Printf("🟢 STREAM GOROUTINE STARTED for device: %s (ADB: %s)", stream.deviceID, stream.deviceADBID)
-
-	// Calculate frame interval for target FPS
-	frameInterval := time.Duration(1000/stream.fps) * time.Millisecond
-	ticker := time.NewTicker(frameInterval)
-	defer ticker.Stop()
-
-	log.Printf("🟢 TICKER CREATED: capturing every %dms (target %d FPS)", frameInterval.Milliseconds(), stream.fps)
-
-	adbClient := s.deviceManager.GetADBClient()
-	frameCount := 0
-	errorCount := 0
-	maxErrors := 5 // Stop after 5 consecutive errors
-
-	for {
-		select {
-		case <-stream.stopChan:
-			log.Printf("Stream stopped for device %s", stream.deviceID)
-			return
-
-		case <-ticker.C:
-			// Capture screen
-			log.Printf("📸 Attempting screen capture for %s...", stream.deviceID)
-			startTime := time.Now()
-			frameBytes, err := adbClient.ScreenCapture(stream.deviceADBID)
-			captureTime := time.Since(startTime)
-			log.Printf("📸 Capture completed: %d bytes, took %dms", len(frameBytes), captureTime.Milliseconds())
-
-			if err != nil {
-				errorCount++
-				log.Printf("Screen capture failed for %s (error %d/%d): %v",
-					stream.deviceID, errorCount, maxErrors, err)
-
-				if errorCount >= maxErrors {
-					log.Printf("Too many errors, stopping stream for %s", stream.deviceID)
-					s.StopStreaming(stream.deviceID)
-					return
-				}
-				continue
-			}
-
-			// Reset error count on success
-			errorCount = 0
-			frameCount++
-
-			// Encode to base64
-			frameBase64 := base64.StdEncoding.EncodeToString(frameBytes)
-
-			// Calculate FPS
-			actualFPS := 0
-			if !stream.lastFrame.IsZero() {
-				timeSinceLastFrame := time.Since(stream.lastFrame)
-				actualFPS = int(1000 / timeSinceLastFrame.Milliseconds())
-			}
-			stream.lastFrame = time.Now()
-
-			// Create WebSocket message
-			message := map[string]interface{}{
-				"type":        "screen_frame",
-				"device_id":   stream.deviceID,
-				"frame":       frameBase64,
-				"timestamp":   time.Now().Unix(),
-				"frame_count": frameCount,
-				"fps":         actualFPS,
-				"capture_ms":  captureTime.Milliseconds(),
-			}
-
-			// Broadcast to WebSocket clients
-			log.Printf("📡 Broadcasting frame to WebSocket clients for %s", stream.deviceID)
-			s.wsHub.BroadcastToDevice(stream.deviceID, message)
-			log.Printf("📡 Broadcast completed")
-
-			// Log every 30 frames (~1 second)
-			if frameCount%30 == 0 {
-				log.Printf("Device %s: Frame %d, FPS: %d, Capture: %dms",
-					stream.deviceID, frameCount, actualFPS, captureTime.Milliseconds())
-			}
-		}
+// Helper: Kiểm tra xem bytes tiếp theo có phải Start Code không.
+// Trả về độ dài start code (3 hoặc 4), hoặc 0 nếu không phải.
+func peekStartCode(br *bufio.Reader) (int, error) {
+	// Start code có thể là 00 00 01 hoặc 00 00 00 01
+	// Cần peek tối đa 4 bytes
+	buf, err := br.Peek(4)
+	if err != nil && err != io.EOF {
+		return 0, err
 	}
+
+	if len(buf) >= 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 1 {
+		return 3, nil
+	}
+	if len(buf) >= 4 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1 {
+		return 4, nil
+	}
+	return 0, nil
 }
 
 // StartAllStreaming starts streaming for all online devices
