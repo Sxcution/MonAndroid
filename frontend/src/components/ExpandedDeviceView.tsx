@@ -100,7 +100,6 @@ export const ExpandedDeviceView: React.FC<ExpandedDeviceViewProps> = ({ deviceId
                         device={device} 
                         className="w-full h-full" 
                         interactive={true}
-                        active={true} // Đảm bảo Expanded View luôn active
                     />
                 </div>
 

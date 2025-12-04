@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	writeWait  = 5 * time.Second  // ⚡ Giảm từ 10s xuống 5s
+	writeWait  = 10 * time.Second
 	pongWait   = 60 * time.Second
 	pingPeriod = (pongWait * 9) / 10 // 54 seconds
 )
@@ -98,20 +98,18 @@ func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 		// Send to clients subscribed to this device or subscribed to all
 		if client.subscribed[deviceID] || client.subscribed["all"] {
 			subscribedCount++
-			// ⚡ Queue nhỏ + drop: nếu queue đầy -> drop frame cũ, giữ mới nhất
 			select {
 			case client.send <- messageBytes:
-				// Success
 			default:
-				// Queue đầy -> drop frame cũ, giữ mới nhất
+				// Channel full - drop oldest and try again (backpressure)
 				select {
-				case <-client.send: // Drop oldest
+				case <-client.send:
 				default:
 				}
 				select {
-				case client.send <- messageBytes: // Try to send new
+				case client.send <- messageBytes:
 				default:
-					// Still full, skip this frame
+					log.Printf("⚠️ Client channel full, skipping frame")
 				}
 			}
 		}
@@ -154,7 +152,7 @@ func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Con
 	client := &Client{
 		hub:        hub,
 		conn:       conn,
-		send:       make(chan []byte, 3), // ⚡ Giảm queue xuống 2-3 để tránh backlog
+		send:       make(chan []byte, 64), // Tăng buffer lên chút
 		subscribed: make(map[string]bool),
 		ss:         ss, // Gán service
 	}
@@ -176,7 +174,7 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
-	c.conn.SetReadLimit(64 << 20) // ⚡ 64MB frame limit để không choke khi burst
+	c.conn.SetReadLimit(1 << 20) // 1MB max message size
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -202,18 +200,11 @@ func (c *Client) readPump() {
 						c.subscribed[deviceID] = true
 						log.Printf("Client subscribed to device %s", deviceID)
 
-						// 🔥 THÊM ĐOẠN NÀY: Tự động Start Streaming khi có người xem
+						// --- LOGIC MỚI: Gửi ngay cached SPS/PPS ---
 						if c.ss != nil {
-							// Gọi StartStreaming ngay tại đây (Goroutine để không block)
-							go func(id string) {
-								if err := c.ss.StartStreaming(id); err != nil {
-									log.Printf("Auto-start stream failed for %s: %v", id, err)
-								}
-							}(deviceID)
-
-							// Logic gửi cached header cũ giữ nguyên...
 							sps, pps := c.ss.GetStreamHeaders(deviceID)
 							if sps != nil {
+								log.Printf("📤 Sending cached SPS to new subscriber for %s", deviceID)
 								select {
 								case c.send <- sps:
 								default:
@@ -221,6 +212,7 @@ func (c *Client) readPump() {
 								}
 							}
 							if pps != nil {
+								log.Printf("📤 Sending cached PPS to new subscriber for %s", deviceID)
 								select {
 								case c.send <- pps:
 								default:
@@ -228,6 +220,7 @@ func (c *Client) readPump() {
 								}
 							}
 						}
+						// ------------------------------------------
 					}
 				case "unsubscribe":
 					if deviceID, ok := msg["device_id"].(string); ok {
@@ -256,38 +249,19 @@ func (c *Client) writePump() {
 				return
 			}
 
-			// ⚡ Coalesce backlog: chỉ giữ frame mới nhất để tránh nghẽn
-			drain := frame
-			for i := 0; i < len(c.send) && i < 5; i++ {
-				select {
-				case nextFrame := <-c.send:
-					drain = nextFrame // Giữ frame mới nhất
-				default:
-					break
-				}
-			}
-
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 
-			// Detect if this is binary (H.264) or JSON
-			isBinary := len(drain) > 4 && (drain[0] != '{' && drain[0] != '[')
+			// Detect if this is binary (H.264 with length prefix) or JSON
+			isBinary := len(frame) > 4 && (frame[0] != '{' && frame[0] != '[')
 
 			if isBinary {
-				// Send as BinaryMessage using NextWriter for better performance
-				w, err := c.conn.NextWriter(websocket.BinaryMessage)
-				if err != nil {
-					return
-				}
-				if _, err = w.Write(drain); err != nil {
-					w.Close()
-					return
-				}
-				if err := w.Close(); err != nil {
+				// Send as BinaryMessage
+				if err := c.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 					return
 				}
 			} else {
 				// Send as TextMessage (JSON)
-				if err := c.conn.WriteMessage(websocket.TextMessage, drain); err != nil {
+				if err := c.conn.WriteMessage(websocket.TextMessage, frame); err != nil {
 					return
 				}
 			}

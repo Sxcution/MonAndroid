@@ -34,12 +34,7 @@ function App() {
 
     // Load devices on mount
     useEffect(() => {
-        // ⚡ CHANGE: Load nhanh (Get) trước, sau đó mới Scan chậm
-        const init = async () => {
-            await loadSavedDevices(); // Hiển thị ngay những gì đang có trong RAM backend
-            await handleScanDevices(); // Quét mới
-        };
-        init();
+        loadDevices();
     }, []);
 
     // Sync WebSocket connection state
@@ -57,15 +52,15 @@ function App() {
         return () => clearInterval(interval);
     }, [setConnected]);
 
-    // Hàm mới: Chỉ lấy danh sách đang có (siêu nhanh)
-    const loadSavedDevices = async () => {
+    const loadDevices = async () => {
+        setIsScanning(true);
         try {
-            const deviceList = await api.device.getDevices();
-            if (deviceList && deviceList.length > 0) {
-                setDevices(deviceList);
-            }
+            const deviceList = await api.device.scanDevices();
+            setDevices(deviceList);
         } catch (error) {
-            console.error('Failed to load saved devices:', error);
+            console.error('Failed to load devices:', error);
+        } finally {
+            setIsScanning(false);
         }
     };
 
