@@ -47,9 +47,10 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if already streaming
+	// Check if already streaming - if yes, just return success (idempotent)
 	if stream, exists := s.streams[deviceID]; exists && stream.isStreaming {
-		return fmt.Errorf("device %s is already streaming", deviceID)
+		log.Printf("Device %s is already streaming, returning success", deviceID)
+		return nil // Return success instead of error for idempotency
 	}
 
 	// Get device info
@@ -101,12 +102,12 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 // streamDevice handles the streaming loop for a single device
 func (s *StreamingService) streamDevice(stream *deviceStream) {
 	log.Printf("🟢 STREAM GOROUTINE STARTED for device: %s (ADB: %s)", stream.deviceID, stream.deviceADBID)
-	
+
 	// Calculate frame interval for target FPS
 	frameInterval := time.Duration(1000/stream.fps) * time.Millisecond
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
-	
+
 	log.Printf("🟢 TICKER CREATED: capturing every %dms (target %d FPS)", frameInterval.Milliseconds(), stream.fps)
 
 	adbClient := s.deviceManager.GetADBClient()
@@ -130,9 +131,9 @@ func (s *StreamingService) streamDevice(stream *deviceStream) {
 
 			if err != nil {
 				errorCount++
-				log.Printf("Screen capture failed for %s (error %d/%d): %v", 
+				log.Printf("Screen capture failed for %s (error %d/%d): %v",
 					stream.deviceID, errorCount, maxErrors, err)
-				
+
 				if errorCount >= maxErrors {
 					log.Printf("Too many errors, stopping stream for %s", stream.deviceID)
 					s.StopStreaming(stream.deviceID)
@@ -174,7 +175,7 @@ func (s *StreamingService) streamDevice(stream *deviceStream) {
 
 			// Log every 30 frames (~1 second)
 			if frameCount%30 == 0 {
-				log.Printf("Device %s: Frame %d, FPS: %d, Capture: %dms", 
+				log.Printf("Device %s: Frame %d, FPS: %d, Capture: %dms",
 					stream.deviceID, frameCount, actualFPS, captureTime.Milliseconds())
 			}
 		}
@@ -184,7 +185,7 @@ func (s *StreamingService) streamDevice(stream *deviceStream) {
 // StartAllStreaming starts streaming for all online devices
 func (s *StreamingService) StartAllStreaming() error {
 	devices := s.deviceManager.GetAllDevices()
-	
+
 	for _, device := range devices {
 		if device.Status == "online" {
 			if err := s.StartStreaming(device.ID); err != nil {
@@ -192,7 +193,7 @@ func (s *StreamingService) StartAllStreaming() error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -220,7 +221,7 @@ func (s *StreamingService) GetStreamingStatus() map[string]bool {
 	for deviceID, stream := range s.streams {
 		status[deviceID] = stream.isStreaming
 	}
-	
+
 	return status
 }
 

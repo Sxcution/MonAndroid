@@ -23,15 +23,41 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
     useEffect(() => {
         // Parse device resolution (e.g., "1080x1920")
+        console.log('🔍 Device resolution:', device.resolution);
+        console.log('🔍 Resolution type:', typeof device.resolution);
         if (device.resolution) {
-            const [width, height] = device.resolution.split('x').map(Number);
-            if (width && height) {
-                // Scale down for display
-                const scale = 0.4;
-                setDimensions({ width: width * scale, height: height * scale });
+            // Extract just the resolution part (e.g., "1080x1920" from "1080x1920 Override size")
+            const resolutionMatch = device.resolution.match(/(\d+)x(\d+)/);
+            console.log('🔍 Resolution match:', resolutionMatch);
+            if (resolutionMatch) {
+                const width = parseInt(resolutionMatch[1]);
+                const height = parseInt(resolutionMatch[2]);
+                console.log('🔍 Parsed dimensions:', { width, height });
+                if (width && height) {
+                    // Scale down for display
+                    const scale = 0.4;
+                    const scaledDims = { width: width * scale, height: height * scale };
+                    console.log('📐 Setting canvas dimensions:', scaledDims);
+                    setDimensions(scaledDims);
+                } else {
+                    console.error('❌ Width or height is 0:', { width, height });
+                }
+            } else {
+                console.error('❌ Failed to match resolution pattern:', device.resolution);
             }
+        } else {
+            console.warn('⚠️ No device resolution available!');
         }
     }, [device.resolution]);
+
+    // Failsafe: Manually update canvas dimensions when state changes
+    useEffect(() => {
+        if (canvasRef.current && dimensions.width > 0 && dimensions.height > 0) {
+            console.log('🔧 Manually setting canvas dimensions:', dimensions);
+            canvasRef.current.width = dimensions.width;
+            canvasRef.current.height = dimensions.height;
+        }
+    }, [dimensions]);
 
     // Start streaming when WebSocket is connected
     useEffect(() => {
@@ -74,21 +100,38 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
     // Handle WebSocket messages (screen frames)
     useEffect(() => {
-        if (!lastMessage || !canvasRef.current) return;
+        if (!lastMessage || !canvasRef.current) {
+            if (!lastMessage) console.log('⏸️ No lastMessage');
+            if (!canvasRef.current) console.log('⏸️ No canvas ref');
+            return;
+        }
 
         try {
             const data = JSON.parse(lastMessage);
 
             if (data.type === 'screen_frame' && data.device_id === device.id) {
-                console.log('📺 Received frame:', data.frame_count, 'FPS:', data.fps);
-
                 const canvas = canvasRef.current;
                 const ctx = canvas.getContext('2d');
-                if (!ctx) return;
+
+                if (!ctx) {
+                    console.error('❌ Failed to get canvas context!');
+                    return;
+                }
 
                 // Update FPS and latency
                 if (data.fps) setFps(data.fps);
                 if (data.capture_ms) setLatency(data.capture_ms);
+
+                // Check for empty frame data
+                if (!data.frame || data.frame.length === 0) {
+                    console.error('❌ Empty frame data!');
+                    return;
+                }
+
+                // Log only every 30 frames to reduce console spam
+                if (data.frame_count % 30 === 0) {
+                    console.log(`📺 Frame: ${data.frame_count}, FPS: ${data.fps}, Canvas: ${canvas.width}x${canvas.height}`);
+                }
 
                 // Create image from base64
                 const img = new Image();
@@ -97,8 +140,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 };
                 img.onerror = (err) => {
-                    console.error('❌ Image load error:', err);
+                    console.error('❌ Image load error:', err, 'Frame:', data.frame_count);
                 };
+
                 img.src = `data:image/png;base64,${data.frame}`;
             }
         } catch (error) {
