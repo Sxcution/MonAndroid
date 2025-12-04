@@ -1,0 +1,73 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Build outputs
+dist/
+build/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Backend binaries
+backend/backend.exe
+backend/backend
+backend/*.exe
+*.db
+
+# Electron/Node large files
+frontend/node_modules/
+frontend/out/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Large asset files (>10MB)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.iso
+*.dmg
+*.pkg
+*.tar.gz
+*.zip
+
+# Screenshots for documentation (keep small ones)
+# Large test files
+test-data/
+fixtures/large/
+
+# Brain/artifacts (AI session data)
+.gemini/
+brain/

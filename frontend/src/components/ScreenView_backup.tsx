@@ -166,24 +166,20 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
                 const spsRaw = stripStartCode(spsRef.current);
                 const ppsRaw = stripStartCode(ppsRef.current);
 
-                // Create proper avcC binary structure [CRITICAL FIX]
-                const description = createAVCDecoderConfigurationRecord(spsRaw, ppsRaw);
+                // Create avcC description (concatenate raw SPS + PPS without start codes)
+                const description = new Uint8Array(spsRaw.length + ppsRaw.length);
+                description.set(spsRaw, 0);
+                description.set(ppsRaw, spsRaw.length);
 
-                // Configure decoder
-                try {
-                    decoder.configure({
-                        codec: 'avc1.42E01E',
-                        optimizeForLatency: true,
-                        description: description,
-                    });
-                    console.log('✅ Decoder configured successfully!', {
-                        spsLen: spsRaw.length,
-                        ppsLen: ppsRaw.length,
-                        avcCLen: description.length
-                    });
-                } catch (e) {
-                    console.error('❌ Decoder Configuration Failed:', e);
-                }
+                decoder.configure({
+                    codec: 'avc1.42E01E',
+                    optimizeForLatency: true,
+                    description: description,
+                });
+                console.log('✅ Decoder configured successfully!', {
+                    spsLen: spsRaw.length,
+                    ppsLen: ppsRaw.length
+                });
             }
 
             // Skip if decoder not ready
@@ -343,48 +339,5 @@ function stripStartCode(nalUnit: Uint8Array): Uint8Array {
     }
 
     return nalUnit; // No start code found, return as-is
-}
-
-/**
- * Create AVCDecoderConfigurationRecord (avcC) from raw SPS and PPS
- * Reference: ISO/IEC 14496-15
- */
-function createAVCDecoderConfigurationRecord(sps: Uint8Array, pps: Uint8Array): Uint8Array {
-    // Extract profile/compatibility/level from SPS
-    // SPS[0] = NAL header, SPS[1] = Profile, SPS[2] = Compatibility, SPS[3] = Level
-    const profileIndication = sps[1];
-    const profileCompatibility = sps[2];
-    const levelIndication = sps[3];
-    const lengthSizeMinusOne = 3; // 4 bytes length prefix (value = 3)
-
-    // Calculate total buffer size
-    // Header (5) + SPS Count (1) + SPS Length (2) + SPS data + PPS Count (1) + PPS Length (2) + PPS data
-    const bodyLength = 5 + 1 + 2 + sps.length + 1 + 2 + pps.length;
-    const buf = new Uint8Array(bodyLength);
-    const view = new DataView(buf.buffer);
-
-    let offset = 0;
-
-    // avcC header
-    buf[offset++] = 1; // configurationVersion
-    buf[offset++] = profileIndication;
-    buf[offset++] = profileCompatibility;
-    buf[offset++] = levelIndication;
-    buf[offset++] = 0xfc | lengthSizeMinusOne; // 11111100 | 3
-
-    // SPS array
-    buf[offset++] = 0xe0 | 1; // 11100000 | 1 (numOfSequenceParameterSets = 1)
-    view.setUint16(offset, sps.length, false); // Big-endian SPS length
-    offset += 2;
-    buf.set(sps, offset);
-    offset += sps.length;
-
-    // PPS array
-    buf[offset++] = 1; // numOfPictureParameterSets = 1
-    view.setUint16(offset, pps.length, false); // Big-endian PPS length
-    offset += 2;
-    buf.set(pps, offset);
-
-    return buf;
 }
 
