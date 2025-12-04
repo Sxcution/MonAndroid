@@ -1,59 +1,28 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useAppStore } from '@/store/useAppStore';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { WS_URL } from '@/utils/constants';
-import { WebSocketMessage } from '@/types/api';
 
-/**
- * WebSocket hook for real-time communication with backend
- */
 export function useWebSocket() {
+    const [isConnected, setIsConnected] = useState(false);
+    const [lastMessage, setLastMessage] = useState<string | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
-    const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-    const {
-        onDeviceStatusChange,
-        onScreenFrameUpdate,
-        updateActionStatus,
-        setConnected,
-    } = useAppStore();
 
-    const connect = useCallback(() => {
-        try {
+    useEffect(() => {
+        let reconnectTimeout: NodeJS.Timeout;
+        let isComponentMounted = true;
+
+        const connect = () => {
+            if (!isComponentMounted) return;
+
             const ws = new WebSocket(WS_URL);
+            wsRef.current = ws;
 
             ws.onopen = () => {
                 console.log('WebSocket connected');
-                setConnected(true);
+                setIsConnected(true);
             };
 
             ws.onmessage = (event) => {
-                try {
-                    const message: WebSocketMessage = JSON.parse(event.data);
-
-                    switch (message.type) {
-                        case 'device_status':
-                            if (message.device_id && message.status) {
-                                onDeviceStatusChange(message.device_id, message.status as any);
-                            }
-                            break;
-
-                        case 'screen_frame':
-                            if (message.device_id && message.frame_data) {
-                                onScreenFrameUpdate(message.device_id, message.frame_data);
-                            }
-                            break;
-
-                        case 'action_result':
-                            if (message.action_id && message.status) {
-                                updateActionStatus(message.action_id, message.status as any, message.result);
-                            }
-                            break;
-
-                        default:
-                            console.log('Unknown message type:', message.type);
-                    }
-                } catch (error) {
-                    console.error('Error parsing WebSocket message:', error);
-                }
+                setLastMessage(event.data);
             };
 
             ws.onerror = (error) => {
@@ -62,46 +31,45 @@ export function useWebSocket() {
 
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
-                setConnected(false);
+                setIsConnected(false);
 
-                // Attempt to reconnect after 3 seconds
-                reconnectTimeoutRef.current = setTimeout(() => {
+                if (isComponentMounted) {
                     console.log('Attempting to reconnect...');
-                    connect();
-                }, 3000);
+                    reconnectTimeout = setTimeout(connect, 2000);
+                }
             };
+        };
 
-            wsRef.current = ws;
-        } catch (error) {
-            console.error('Error creating WebSocket:', error);
-        }
-    }, [onDeviceStatusChange, onScreenFrameUpdate, updateActionStatus, setConnected]);
-
-    const disconnect = useCallback(() => {
-        if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-        }
-        if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
-    }, []);
-
-    const sendMessage = useCallback((message: WebSocketMessage) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify(message));
-        } else {
-            console.warn('WebSocket is not connected');
-        }
-    }, []);
-
-    useEffect(() => {
         connect();
-        return () => disconnect();
-    }, [connect, disconnect]);
+
+        return () => {
+            isComponentMounted = false;
+            clearTimeout(reconnectTimeout);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.close();
+            }
+        };
+    }, []);
+
+    const sendMessage = useCallback((message: any) => {
+        const ws = wsRef.current;
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(message));
+        } else {
+            console.warn('WebSocket is not connected, will retry...');
+            // Retry after a short delay
+            setTimeout(() => {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify(message));
+                }
+            }, 500);
+        }
+    }, []);
 
     return {
+        isConnected,
+        lastMessage,
         sendMessage,
-        isConnected: wsRef.current?.readyState === WebSocket.OPEN,
     };
 }
