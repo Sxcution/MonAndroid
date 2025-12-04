@@ -1,6 +1,7 @@
 package api
 
 import (
+	"androidcontrol/service"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -30,6 +31,7 @@ type Client struct {
 	conn       *websocket.Conn
 	send       chan []byte // Buffered channel for binary frames
 	subscribed map[string]bool
+	ss         *service.StreamingService // Reference tới StreamingService để lấy cached headers
 }
 
 type WebSocketHub struct {
@@ -140,7 +142,7 @@ func (h *WebSocketHub) BroadcastToAll(message interface{}) {
 	}
 }
 
-func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
+func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
@@ -150,8 +152,9 @@ func HandleWebSocket(hub *WebSocketHub, c *gin.Context) {
 	client := &Client{
 		hub:        hub,
 		conn:       conn,
-		send:       make(chan []byte, 32), // Buffered for smoother streaming
+		send:       make(chan []byte, 64), // Tăng buffer lên chút
 		subscribed: make(map[string]bool),
+		ss:         ss, // Gán service
 	}
 
 	// Default: subscribe to all devices
@@ -196,6 +199,28 @@ func (c *Client) readPump() {
 					if deviceID, ok := msg["device_id"].(string); ok {
 						c.subscribed[deviceID] = true
 						log.Printf("Client subscribed to device %s", deviceID)
+
+						// --- LOGIC MỚI: Gửi ngay cached SPS/PPS ---
+						if c.ss != nil {
+							sps, pps := c.ss.GetStreamHeaders(deviceID)
+							if sps != nil {
+								log.Printf("📤 Sending cached SPS to new subscriber for %s", deviceID)
+								select {
+								case c.send <- sps:
+								default:
+									log.Printf("⚠️ Failed to send cached SPS (channel full)")
+								}
+							}
+							if pps != nil {
+								log.Printf("📤 Sending cached PPS to new subscriber for %s", deviceID)
+								select {
+								case c.send <- pps:
+								default:
+									log.Printf("⚠️ Failed to send cached PPS (channel full)")
+								}
+							}
+						}
+						// ------------------------------------------
 					}
 				case "unsubscribe":
 					if deviceID, ok := msg["device_id"].(string); ok {

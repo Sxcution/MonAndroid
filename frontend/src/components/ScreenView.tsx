@@ -144,21 +144,43 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             }
 
             const nalUnit = buf.subarray(4, 4 + len);
-            console.log(`📦 Received NAL unit: ${len} bytes`);
             const decoder = decoderRef.current;
 
             // Extract NAL type from this individual NAL unit
             const nalType = getNALType(nalUnit);
+            
+            // Debug log only for important NAL types
+            if (nalType === 7 || nalType === 8 || nalType === 5) {
+                console.log(`📦 Received NAL unit: ${len} bytes, type: ${nalType}${nalType === 7 ? ' (SPS)' : nalType === 8 ? ' (PPS)' : nalType === 5 ? ' (IDR)' : ''}`);
+            }
 
             // Handle SPS (type 7)
             if (nalType === 7) {
-                console.log('🔍 Found SPS NAL (type 7)');
+                console.log('🔍 Found SPS NAL (type 7), length:', nalUnit.length);
                 spsRef.current = nalUnit;
             }
             // Handle PPS (type 8)
             else if (nalType === 8) {
-                console.log('🔍 Found PPS NAL (type 8)');
+                console.log('🔍 Found PPS NAL (type 8), length:', nalUnit.length);
                 ppsRef.current = nalUnit;
+            }
+            
+            // Debug: Log if we're waiting for SPS/PPS
+            if (decoder.state === 'unconfigured') {
+                if (!spsRef.current && nalType !== 7) {
+                    // Only log once per second to avoid spam
+                    const now = Date.now();
+                    if (!(window as any).lastSpsLog || now - (window as any).lastSpsLog > 1000) {
+                        console.log('⏳ Waiting for SPS (NAL type 7)...');
+                        (window as any).lastSpsLog = now;
+                    }
+                } else if (spsRef.current && !ppsRef.current && nalType !== 8) {
+                    const now = Date.now();
+                    if (!(window as any).lastPpsLog || now - (window as any).lastPpsLog > 1000) {
+                        console.log('⏳ Waiting for PPS (NAL type 8)...');
+                        (window as any).lastPpsLog = now;
+                    }
+                }
             }
 
             // Configure decoder if we have both SPS and PPS
@@ -203,8 +225,6 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
             // Only decode video frames (IDR type 5 or Slice type 1)
             if (nalType !== 5 && nalType !== 1) return;
-
-            console.log(`🎬 Decoding frame (NAL type ${nalType})`);
 
             // Backpressure: skip frame if decoder queue is full
             if (decoder.decodeQueueSize > 4) {
@@ -320,6 +340,8 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
 
 // Helper: Get NAL type from an individual NAL unit
 function getNALType(nalUnit: Uint8Array): number {
+    if (nalUnit.length === 0) return -1;
+    
     // Find start code
     let offset = 0;
     if (nalUnit.length >= 4 && nalUnit[0] === 0 && nalUnit[1] === 0) {
@@ -330,11 +352,13 @@ function getNALType(nalUnit: Uint8Array): number {
         }
     }
 
-    if (offset > 0 && offset < nalUnit.length) {
-        return nalUnit[offset] & 0x1F;
-    }
-
-    return -1; // Invalid
+    // If start code found, use offset; otherwise use first byte directly (raw NAL)
+    const nalHeaderByte = offset > 0 && offset < nalUnit.length 
+        ? nalUnit[offset] 
+        : nalUnit[0];
+    
+    // Extract NAL type (lower 5 bits)
+    return nalHeaderByte & 0x1F;
 }
 
 // Helper: Strip start code from NAL unit (for avcC format)

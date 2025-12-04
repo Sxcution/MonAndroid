@@ -62,7 +62,7 @@ func SetupRoutes(router *gin.Engine, dm *service.DeviceManager, ad *service.Acti
 
 	// WebSocket route
 	router.GET("/ws", func(c *gin.Context) {
-		HandleWebSocket(wsHub, c)
+		HandleWebSocket(wsHub, ss, c) // Truyền thêm ss
 	})
 }
 

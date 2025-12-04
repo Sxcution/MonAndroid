@@ -32,6 +32,10 @@ type deviceStream struct {
 	stopChan    chan bool
 	fps         int
 	h264Cmd     *exec.Cmd // H.264 screenrecord process
+	// Cache SPS/PPS headers để gửi cho client mới subscribe
+	spsPkt []byte
+	ppsPkt []byte
+	mu     sync.RWMutex // Mutex để bảo vệ header
 }
 
 // NewStreamingService creates a new streaming service
@@ -262,6 +266,29 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 		}
 	}
 
+	// --- LOGIC MỚI: Cache SPS/PPS ---
+	if nalType == 7 || nalType == 8 {
+		s.mu.RLock()
+		stream, exists := s.streams[deviceID]
+		s.mu.RUnlock()
+
+		if exists {
+			stream.mu.Lock()
+			// Lưu lại packet đầy đủ (có cả length prefix) để gửi thẳng cho client mới
+			if nalType == 7 {
+				stream.spsPkt = make([]byte, len(pkt))
+				copy(stream.spsPkt, pkt)
+				fmt.Printf("📦 Device %s: Cached SPS (seq %d)\n", deviceID, *frameCount)
+			} else if nalType == 8 {
+				stream.ppsPkt = make([]byte, len(pkt))
+				copy(stream.ppsPkt, pkt)
+				fmt.Printf("📦 Device %s: Cached PPS (seq %d)\n", deviceID, *frameCount)
+			}
+			stream.mu.Unlock()
+		}
+	}
+	// --------------------------------
+
 	if nalType == 7 {
 		fmt.Printf("📦 Device %s: Sent SPS (seq %d)\n", deviceID, *frameCount)
 	} else if nalType == 8 {
@@ -337,4 +364,32 @@ func (s *StreamingService) IsStreaming(deviceID string) bool {
 
 	stream, exists := s.streams[deviceID]
 	return exists && stream.isStreaming
+}
+
+// GetStreamHeaders returns cached SPS/PPS packets for a device
+// Returns nil slices if device not found or headers not available
+func (s *StreamingService) GetStreamHeaders(deviceID string) ([]byte, []byte) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, nil
+	}
+
+	stream.mu.RLock()
+	defer stream.mu.RUnlock()
+
+	// Trả về bản copy để an toàn
+	var sps, pps []byte
+	if stream.spsPkt != nil {
+		sps = make([]byte, len(stream.spsPkt))
+		copy(sps, stream.spsPkt)
+	}
+	if stream.ppsPkt != nil {
+		pps = make([]byte, len(stream.ppsPkt))
+		copy(pps, stream.ppsPkt)
+	}
+
+	return sps, pps
 }
