@@ -11,8 +11,8 @@ export const DeviceGrid: React.FC = () => {
         selectDevice,
     } = useAppStore();
 
-    // TEMP: Show only 1 device for testing streaming
-    const displayDevices = devices.slice(0, 1);
+    // ✅ Hiển thị tất cả thiết bị (bỏ giới hạn slice)
+    const displayDevices = devices;
 
     if (displayDevices.length === 0) {
         return (

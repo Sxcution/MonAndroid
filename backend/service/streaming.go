@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -248,6 +247,7 @@ func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 }
 
 // broadcastNAL sends a single NAL unit to WebSocket
+// Protocol: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
 func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCount *int) {
 	if len(nalData) == 0 {
 		return
@@ -255,10 +255,18 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 
 	*frameCount++
 
-	// Prefix length (4 bytes)
-	pkt := make([]byte, 4+len(nalData))
-	binary.BigEndian.PutUint32(pkt[:4], uint32(len(nalData)))
-	copy(pkt[4:], nalData)
+	// Gắn Device ID vào đầu packet để Frontend có thể filter
+	// Protocol mới: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
+	idLen := len(deviceID)
+	if idLen > 255 {
+		log.Printf("Warning: Device ID too long: %s", deviceID)
+		return
+	}
+
+	pkt := make([]byte, 1+idLen+len(nalData))
+	pkt[0] = byte(idLen)
+	copy(pkt[1:], []byte(deviceID))
+	copy(pkt[1+idLen:], nalData)
 
 	// Broadcast
 	s.wsHub.BroadcastToDevice(deviceID, pkt)

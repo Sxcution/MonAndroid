@@ -157,8 +157,8 @@ func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Con
 		ss:         ss, // Gán service
 	}
 
-	// Default: subscribe to all devices
-	client.subscribed["all"] = true
+	// ❌ XÓA: Đừng auto subscribe tất cả nữa! Client chỉ nhận video của device nó subscribe
+	// client.subscribed["all"] = true
 
 	client.hub.register <- client
 

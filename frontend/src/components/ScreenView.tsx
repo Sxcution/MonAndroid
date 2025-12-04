@@ -95,14 +95,23 @@ export const ScreenView: React.FC<ScreenViewProps> = ({ device, className }) => 
             if (!(data instanceof ArrayBuffer)) return;
 
             const buf = new Uint8Array(data);
-            // Protocol backend: [4 bytes len] [NAL unit]
-            if (buf.byteLength < 5) return;
             
-            const view = new DataView(buf.buffer);
-            const len = view.getUint32(0);
-            if (len + 4 > buf.byteLength) return;
+            // Protocol mới: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
+            if (buf.byteLength < 2) return;
+            
+            const idLen = buf[0];
+            if (buf.byteLength < 1 + idLen) return;
 
-            const nalUnit = buf.subarray(4, 4 + len);
+            // Đọc Device ID từ gói tin
+            const msgDeviceId = new TextDecoder().decode(buf.subarray(1, 1 + idLen));
+
+            // 🔥 LỌC: Nếu không phải ID của máy mình -> Bỏ qua ngay lập tức
+            if (msgDeviceId !== device.id) {
+                return; 
+            }
+
+            // Lấy NAL Data thực sự
+            const nalUnit = buf.subarray(1 + idLen);
             const nalType = getNALType(nalUnit);
 
             // 1. Lưu SPS/PPS

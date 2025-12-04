@@ -214,18 +214,17 @@ func (c *ADBClient) ScreenCapture(deviceID string) ([]byte, error) {
 // StartH264Stream starts hardware-encoded H.264 streaming using screenrecord
 // Returns io.ReadCloser for streaming raw H.264 data, and *exec.Cmd for process control
 func (c *ADBClient) StartH264Stream(deviceID string) (io.ReadCloser, *exec.Cmd, error) {
-	// Get config from env with defaults
-	bitrate := getEnv("H264_BITRATE", "4000000") // 4 Mbps default
-	size := getEnv("H264_SIZE", "1280x720")      // 720p default
+	// ✅ SỬA: Giảm Bitrate xuống 1Mbps và Size xuống thấp hơn để chạy được nhiều máy
+	bitrate := getEnv("H264_BITRATE", "1000000") // 1 Mbps default (đủ nét cho ô nhỏ)
+	size := getEnv("H264_SIZE", "600x1024")       // Giảm size để tối ưu cho grid view
 
 	// Build screenrecord command with H.264 output
-	// Thêm --verbose để debug nếu cần
+	// QUAN TRỌNG: Không được dùng --verbose khi output là "-" (stdout)
 	cmd := exec.Command(c.ADBPath, "-s", deviceID, "exec-out",
 		"screenrecord",
 		"--output-format=h264",
 		"--bit-rate="+bitrate,
 		"--size="+size,
-		"--verbose", // Để debug nếu cần
 		"-") // stdout
 
 	// Get stdout pipe for streaming
