@@ -5,9 +5,9 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
 
 ## Root Files
 - `README.md`: Setup instructions
-- `Work.md`: Project status and roadmap
 - `naming_registry.json`: Centralized naming conventions
-- `DEVELOPMENT_RULES.md`: Coding standards and protocols
+- `project_structure.md`: Architecture documentation
+- `run_all.bat`: Quick start script to launch backend and frontend
 
 ---
 
@@ -16,10 +16,11 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
 ### Core Services
 - `main.go`: Entry point, server initialization.
 - `service/streaming.go`:
-  - Manages H.264 streams from ADB with **auto-restart loop**.
+  - Manages H.264 streams from ADB with **auto-restart loop** and **context-based lifecycle**.
   - **Protocol:** Reads raw H.264 (Annex B), wraps it in custom binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`.
   - **State:** Idempotent Start/Stop logic.
   - **Auto-Restart:** Automatically restarts stream every 3 minutes for unlimited streaming (compatible with all devices).
+  - **Context Management:** Uses `context.Context` to properly manage stream lifecycle and prevent premature exits.
 - `service/device_manager.go`: Scans and manages device list/status.
 - `service/action_dispatcher.go`: Handles input events (Touch, Key, Text) via ADB.
 
@@ -50,12 +51,14 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
   - **Logic:** Auto-detects codec from SPS. Patches low-level SPS to 4.2. Stitches `SPS+PPS+IDR` for keyframes.
   - **Filtering:** Parses binary header to filter NALs by `device.id`.
   - **Recovery:** Auto-resets decoder on error.
-  - **Canvas:** Uses `absolute inset-0` and `object-fill` to fill entire card without black bars.
+  - **Canvas:** Uses `canvasSizeRef` to track size and only update when changed, preventing context reset blur.
+  - **Keyframe Waiting:** Enforces WebCodecs requirement to receive keyframe (IDR) after configure before decoding P-frames.
 - `DeviceCard.tsx`:
   - **Hover Detection:** Expand button (magnifying glass) only visible on hover.
   - **Global Position:** Expand button position shared across all cards via `useAppStore`.
   - **Drag vs Click:** Distinguishes drag (>5px movement) from click to prevent accidental expand.
-- `DeviceGrid.tsx`: Renders grid of `DeviceCard`.
+  - **Aspect Ratio:** Uses `aspect-[9/16]` for consistent card height in grid.
+- `DeviceGrid.tsx`: Renders grid of `DeviceCard` with `auto-rows-fr` for equal height rows.
 - `SettingsModal.tsx`: Settings UI for FPS control (5-30), FPS indicator toggle, device name toggle.
 - `ControlPanel.tsx`: Modal for single device control (High res).
 
