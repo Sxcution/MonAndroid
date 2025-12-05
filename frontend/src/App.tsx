@@ -33,6 +33,7 @@ function App() {
     const [showBatchInput, setShowBatchInput] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [sidebarVisible, setSidebarVisible] = useState(false);
+    const [scanVersion, setScanVersion] = useState(0); // Increments to force re-mount ScreenView
 
     // Drag selection state
     const [isDragging, setIsDragging] = useState(false);
@@ -73,6 +74,8 @@ function App() {
         try {
             const deviceList = await api.device.scanDevices();
             setDevices(deviceList);
+            // Increment scanVersion to force ScreenView re-mount and stream re-subscribe
+            setScanVersion(v => v + 1);
         } catch (error) {
             console.error('Failed to scan devices:', error);
         } finally {
@@ -297,7 +300,7 @@ function App() {
 
             {/* Main Content - Full Screen Grid */}
             <main className="w-full h-full">
-                <DeviceGrid dragHighlightedDevices={dragHighlightedDevices} />
+                <DeviceGrid dragHighlightedDevices={dragHighlightedDevices} scanVersion={scanVersion} />
             </main>
 
             {/* Expanded Device View */}

@@ -5,9 +5,10 @@ import { Loader2 } from 'lucide-react';
 
 interface DeviceGridProps {
     dragHighlightedDevices?: string[];
+    scanVersion?: number; // Increment to force ScreenView re-mount
 }
 
-export const DeviceGrid: React.FC<DeviceGridProps> = ({ dragHighlightedDevices = [] }) => {
+export const DeviceGrid: React.FC<DeviceGridProps> = ({ dragHighlightedDevices = [], scanVersion = 0 }) => {
     const {
         selectedDevices,
         toggleDeviceSelection,
@@ -39,7 +40,8 @@ export const DeviceGrid: React.FC<DeviceGridProps> = ({ dragHighlightedDevices =
             >
                 {deviceSlots.map((device, slotIndex) => (
                     <DeviceCard
-                        key={`slot-${slotIndex}`}
+                        // Use scanVersion in key to force ScreenView re-mount after scan
+                        key={`slot-${slotIndex}-v${scanVersion}`}
                         device={device}
                         slotIndex={slotIndex}
                         isSelected={device ? selectedDevices.includes(device.id) : false}
