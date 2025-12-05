@@ -2,23 +2,23 @@ package service
 
 import (
 	"androidcontrol/adb"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
+	"math/rand"
 	"net"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
 
 // ScrcpyClient manages a scrcpy server connection for a single device
+// Updated for scrcpy 3.x protocol
 type ScrcpyClient struct {
 	adbClient   *adb.ADBClient
 	deviceADBID string
 	localPort   int
+	scid        uint32 // Session Connection ID (32-bit HEX) for scrcpy 3.x
 	serverCmd   *exec.Cmd
 	conn        net.Conn
 	deviceName  string
@@ -33,7 +33,8 @@ func NewScrcpyClient(adbClient *adb.ADBClient, deviceADBID string) *ScrcpyClient
 	return &ScrcpyClient{
 		adbClient:   adbClient,
 		deviceADBID: deviceADBID,
-		localPort:   0, // Will be assigned dynamically
+		localPort:   0,
+		scid:        0, // Will be generated on Start
 	}
 }
 
@@ -47,6 +48,11 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		return c.conn, nil
 	}
 
+	// Generate random 31-bit SCID for scrcpy 3.x
+	// Server uses Java Integer.parseInt(hex, 16) which is signed 32-bit
+	// Values >= 0x80000000 will overflow, so mask to 31-bit (bit 31 = 0)
+	c.scid = rand.Uint32() & 0x7FFFFFFF
+
 	// Step 1: Push scrcpy-server to device
 	log.Printf("📦 [%s] Pushing scrcpy-server...", c.deviceADBID)
 	jarPath := filepath.Join(".", "assets", "scrcpy-server")
@@ -57,34 +63,39 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	}
 	log.Printf("✅ [%s] Server pushed successfully", c.deviceADBID)
 
-	// Step 2: Find free port and setup ADB forward
+	// Step 2: Find free port and setup ADB forward with SCID-based socket name
 	c.localPort = findFreePort()
 	if c.localPort == 0 {
 		return nil, fmt.Errorf("failed to find free port")
 	}
 
-	log.Printf("🔌 [%s] Setting up ADB forward on port %d...", c.deviceADBID, c.localPort)
-	if err := c.adbClient.Forward(c.deviceADBID, c.localPort, "scrcpy"); err != nil {
+	// Scrcpy 3.x uses socket name: scrcpy_<SCID in 8-digit hex>
+	socketName := fmt.Sprintf("scrcpy_%08x", c.scid)
+	log.Printf("🔌 [%s] Setting up ADB forward on port %d (socket: %s)...", c.deviceADBID, c.localPort, socketName)
+	if err := c.adbClient.Forward(c.deviceADBID, c.localPort, socketName); err != nil {
 		return nil, fmt.Errorf("failed to setup ADB forward: %w", err)
 	}
 	log.Printf("✅ [%s] ADB forward established", c.deviceADBID)
 
-	// Step 3: Start scrcpy server with SIMPLIFIED options (tương thích mọi device)
-	log.Printf("🚀 [%s] Starting scrcpy server (v1.24)...", c.deviceADBID)
+	// Step 3: Start scrcpy server with 3.x protocol + raw_stream mode
+	// raw_stream=true: server sends pure H.264 Annex-B without any headers/meta
+	log.Printf("🚀 [%s] Starting scrcpy server (v3.3.3 raw_stream)...", c.deviceADBID)
 	serverArgs := []string{
 		"CLASSPATH=/data/local/tmp/scrcpy-server.jar",
 		"app_process",
 		"/",
 		"com.genymobile.scrcpy.Server",
-		"1.24",
+		"3.3.3",
+		fmt.Sprintf("scid=%08x", c.scid), // HEX format, 8 chars, no 0x prefix
 		"log_level=debug",
+		"video=true",
+		"audio=false",
 		"max_size=720",
-		"bit_rate=2000000",
+		"video_bit_rate=2000000",
 		"max_fps=30",
 		"tunnel_forward=true",
 		"control=false",
-		"send_frame_meta=false",
-		"send_device_meta=true",
+		"raw_stream=true", // Pure H.264 Annex-B, no headers/meta
 	}
 
 	cmd, err := c.adbClient.ExecuteCommandBackground(c.deviceADBID, serverArgs)
@@ -172,44 +183,17 @@ func (c *ScrcpyClient) connectWithRetry(maxRetries int, delay time.Duration) (ne
 	return nil, fmt.Errorf("failed to connect after %d retries", maxRetries)
 }
 
-// handshake performs the scrcpy v1.24 initial handshake
-// Protocol: 1 dummy byte + 64 bytes device name + 2 bytes width + 2 bytes height
+// handshake for scrcpy 3.x raw_stream mode
+// raw_stream=true: server does NOT send any metadata (no dummy byte, no device name, no resolution)
+// So we just set default values and return - the stream is pure H.264 Annex-B
 func (c *ScrcpyClient) handshake() error {
-	// Set read timeout for handshake
-	c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	defer c.conn.SetReadDeadline(time.Time{}) // Clear deadline after handshake
+	// raw_stream=true => socket immediately starts with H.264 data
+	// No dummy byte, no device meta, no codec meta, no frame headers
+	c.deviceName = c.deviceADBID // Use ADB ID as device name
+	c.width = 720                // Set by max_size
+	c.height = 0                 // Unknown in raw mode
 
-	// Read 1 dummy byte
-	dummy := make([]byte, 1)
-	if _, err := io.ReadFull(c.conn, dummy); err != nil {
-		return fmt.Errorf("failed to read dummy byte: %w", err)
-	}
-
-	// Read 64-byte device name (null-padded)
-	nameBytes := make([]byte, 64)
-	if _, err := io.ReadFull(c.conn, nameBytes); err != nil {
-		return fmt.Errorf("failed to read device name: %w", err)
-	}
-	// Trim null bytes to get actual name
-	c.deviceName = strings.TrimRight(string(nameBytes), "\x00")
-
-	// Read 2-byte width (big-endian)
-	widthBytes := make([]byte, 2)
-	if _, err := io.ReadFull(c.conn, widthBytes); err != nil {
-		return fmt.Errorf("failed to read width: %w", err)
-	}
-	c.width = int(binary.BigEndian.Uint16(widthBytes))
-
-	// Read 2-byte height (big-endian)
-	heightBytes := make([]byte, 2)
-	if _, err := io.ReadFull(c.conn, heightBytes); err != nil {
-		return fmt.Errorf("failed to read height: %w", err)
-	}
-	c.height = int(binary.BigEndian.Uint16(heightBytes))
-
-	log.Printf("✅ [%s] Handshake complete: Device='%s', Resolution=%dx%d",
-		c.deviceADBID, c.deviceName, c.width, c.height)
-
+	log.Printf("✅ [%s] Handshake (raw_stream mode): pure H.264 stream ready", c.deviceADBID)
 	return nil
 }
 
