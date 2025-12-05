@@ -42,6 +42,7 @@
             "screen_view": "ScreenView",
             "control_panel": "ControlPanel",
             "action_bar": "ActionBar",
+            "settings_modal": "SettingsModal",
             "app": "App"
         },
         "services": {
@@ -50,7 +51,15 @@
             "device_service": "deviceService"
         },
         "store": {
-            "app_store": "useAppStore"
+            "app_store": "useAppStore",
+            "settings_store": "useSettingsStore"
+        },
+        "state_variables": {
+            "expand_button_position": "expandButtonPosition",
+            "set_expand_button_position": "setExpandButtonPosition",
+            "show_device_name": "showDeviceName",
+            "show_fps_indicator": "showFpsIndicator",
+            "target_fps": "targetFps"
         },
         "types": {
             "device": "Device",

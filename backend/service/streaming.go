@@ -6,6 +6,7 @@ import (
 	"log"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // WebSocketBroadcaster interface to avoid import cycle
@@ -47,7 +48,7 @@ func NewStreamingService(dm *DeviceManager, wsHub WebSocketBroadcaster) *Streami
 	}
 }
 
-// StartStreaming starts streaming for a specific device
+// StartStreaming starts streaming for a specific device with auto-restart loop
 func (s *StreamingService) StartStreaming(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,30 +72,21 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 		return fmt.Errorf("device offline: %s", deviceID)
 	}
 
-	// Start H.264 stream from ADB
-	adbClient := s.deviceManager.GetADBClient()
-	h264Stream, cmd, err := adbClient.StartH264Stream(device.ADBDeviceID)
-	if err != nil {
-		log.Printf("❌ Failed to start H.264 stream for %s: %v", deviceID, err)
-		return fmt.Errorf("failed to start H.264 stream: %w", err)
-	}
-
-	// Create stream
+	// Create stream object
 	stream := &deviceStream{
 		deviceID:    deviceID,
 		deviceADBID: device.ADBDeviceID,
-		isStreaming: true,
+		isStreaming: true, // User wants to stream
 		stopChan:    make(chan bool),
 		fps:         30,
-		h264Cmd:     cmd,
 	}
 
 	s.streams[deviceID] = stream
 
-	// Start H.264 consumer goroutine
-	go s.consumeH264(deviceID, h264Stream)
+	// Start auto-restart loop
+	go s.streamLoop(stream)
 
-	fmt.Printf("Started H.264 streaming for device %s\n", deviceID)
+	fmt.Printf("Started H.264 streaming with auto-restart for device %s\n", deviceID)
 	return nil
 }
 
@@ -154,14 +146,58 @@ func (s *StreamingService) cleanupStream(deviceID string) {
 	delete(s.streams, deviceID)
 }
 
+// streamLoop manages the auto-restart cycle for H.264 streaming
+// Automatically restarts stream when it ends (every ~3 minutes default)
+func (s *StreamingService) streamLoop(stream *deviceStream) {
+	defer func() {
+		log.Printf("🛑 Stream loop ended for %s", stream.deviceID)
+		s.cleanupStream(stream.deviceID)
+	}()
+
+	for {
+		// Check if user stopped the stream
+		s.mu.RLock()
+		isStreaming := stream.isStreaming
+		s.mu.RUnlock()
+
+		if !isStreaming {
+			return // Exit loop if user stopped streaming
+		}
+
+		// Start ADB screenrecord process
+		log.Printf("🔄 Starting ADB screenrecord for %s...", stream.deviceID)
+		adbClient := s.deviceManager.GetADBClient()
+		h264Stream, cmd, err := adbClient.StartH264Stream(stream.deviceADBID)
+
+		if err != nil {
+			log.Printf("❌ Failed to start ADB for %s: %v. Retrying in 2s...", stream.deviceID, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Update cmd reference for cleanup
+		s.mu.Lock()
+		stream.h264Cmd = cmd
+		s.mu.Unlock()
+
+		// Consume H.264 stream (blocks until stream ends ~3 min or error)
+		s.consumeH264(stream.deviceID, h264Stream)
+
+		// Stream ended, cleanup process
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+
+		log.Printf("⚠️ Stream cycle ended for %s (3 min limit). Restarting immediately...", stream.deviceID)
+		// No sleep here for fastest restart
+	}
+}
+
 // consumeH264 reads raw H.264 stream and broadcasts NAL units
-// Uses buffer accumulation strategy to avoid any byte loss
+// Note: cleanup is handled by streamLoop, not here
 func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	defer r.Close()
-	defer func() {
-		log.Printf("✅ Stream ended: %s", deviceID)
-		s.cleanupStream(deviceID)
-	}()
 
 	log.Printf("🎬 Started H.264 stream: %s", deviceID)
 
