@@ -15,49 +15,49 @@ interface DeviceCardProps {
 }
 
 export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, onSelect, onExpand }) => {
-    const { expandedDeviceId } = useAppStore();
+    const { expandedDeviceId, expandButtonPosition, setExpandButtonPosition } = useAppStore();
     const { showDeviceName } = useSettingsStore();
     const isExpanded = device ? expandedDeviceId === device.id : false;
+    const [isHovered, setIsHovered] = useState(false);
 
-    // Logic kéo thả nút kính lúp
+    // Kéo thả button - SỬ DỤNG VỊ TRÍ GLOBAL
     const btnRef = useRef<HTMLButtonElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
-    const [btnPos, setBtnPos] = useState({ x: 0, y: 0 }); // Start at top-left or customized
     const isDraggingBtn = useRef(false);
+    const dragStartPos = useRef({ x: 0, y: 0 }); // Track drag start position
+    const hasDragged = useRef(false); // Track if actually dragged
 
     const handleMouseDownBtn = (e: React.MouseEvent) => {
         e.stopPropagation();
         isDraggingBtn.current = true;
+        hasDragged.current = false; // Reset drag flag
+        dragStartPos.current = { x: e.clientX, y: e.clientY }; // Save start position
     };
 
-    // Xử lý kéo thả nút và dính biên (Snap)
+    // Xử lý kéo thả - CẬP NHẬT GLOBAL POSITION
     useEffect(() => {
         const handleMouseMove = (e: MouseEvent) => {
             if (!isDraggingBtn.current || !containerRef.current) return;
+
+            // Check if moved more than 5px (drag threshold)
+            const deltaX = Math.abs(e.clientX - dragStartPos.current.x);
+            const deltaY = Math.abs(e.clientY - dragStartPos.current.y);
+            if (deltaX > 5 || deltaY > 5) {
+                hasDragged.current = true; // Mark as dragged
+            }
+
             const rect = containerRef.current.getBoundingClientRect();
-            // Tính vị trí tương đối trong card
-            let newX = e.clientX - rect.left - 15; // 15 là nửa width button
+            let newX = e.clientX - rect.left - 15;
             let newY = e.clientY - rect.top - 15;
 
-            // Giới hạn trong khung
             newX = Math.max(0, Math.min(newX, rect.width - 30));
             newY = Math.max(0, Math.min(newY, rect.height - 30));
 
-            setBtnPos({ x: newX, y: newY });
+            setExpandButtonPosition({ x: newX, y: newY }); // CẬP NHẬT GLOBAL
         };
 
         const handleMouseUp = () => {
-            if (!isDraggingBtn.current || !containerRef.current) return;
             isDraggingBtn.current = false;
-
-            // Snap logic: Dính trái hoặc phải
-            const rect = containerRef.current.getBoundingClientRect();
-            const mid = rect.width / 2;
-
-            setBtnPos(prev => ({
-                x: prev.x < mid ? 2 : rect.width - 32, // 32 là size button + margin
-                y: prev.y
-            }));
         };
 
         document.addEventListener('mousemove', handleMouseMove);
@@ -71,21 +71,23 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
     return (
         <div
             ref={containerRef}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
             className={cn(
-                'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group',
+                'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
                 // Border màu xanh nếu được chọn, xám nếu chưa kết nối
                 !device ? 'border-gray-800' :
                     isSelected ? 'border-blue-500' : 'border-gray-700 hover:border-gray-500'
             )}
             onClick={device ? onSelect : undefined}
         >
-            {/* ScreenView Full Ô */}
-            <div className="w-full h-full aspect-[9/16] bg-black relative">
+            {/* ScreenView Full Ô - ABSOLUTE INSET */}
+            <div className="absolute inset-0">
                 {device && device.status === 'online' ? (
                     <ScreenView
                         device={device}
                         className="w-full h-full"
-                        interactive={true} // Cho phép click thẳng vào đây
+                        interactive={true}
                     />
                 ) : (
                     // ✅ Hiển thị "Chưa kết nối" cho null hoặc offline
@@ -116,19 +118,21 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                 )}
             </div>
 
-            {/* Nút Kính Lúp Draggable - Chỉ hiển thị khi device online */}
-            {device && device.status === 'online' && (
+            {/* Nút Kính Lúp Draggable - CHỈ HIỆN KHI HOVER */}
+            {device && device.status === 'online' && isHovered && (
                 <button
                     ref={btnRef}
                     onMouseDown={handleMouseDownBtn}
                     onClick={(e) => {
                         e.stopPropagation();
-                        // Chỉ expand nếu không phải đang kéo
-                        if (!isDraggingBtn.current) onExpand();
+                        // CHỈ expand nếu KHÔNG kéo (click thật)
+                        if (!hasDragged.current) {
+                            onExpand();
+                        }
                     }}
                     style={{
-                        top: btnPos.y,
-                        left: btnPos.x,
+                        top: `${expandButtonPosition.y}px`,
+                        left: `${expandButtonPosition.x}px`,
                         position: 'absolute',
                     }}
                     // Scale 80% (giảm 20%), hình tròn, kính lúp

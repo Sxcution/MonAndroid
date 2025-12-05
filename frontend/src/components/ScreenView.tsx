@@ -287,7 +287,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     }, []);
 
     return (
-        <div className={cn('relative bg-black overflow-hidden', className)}>
+        <div className={cn('relative bg-black w-full h-full', className)}>
             <canvas
                 ref={canvasRef}
                 onMouseDown={handleMouseDown}
@@ -302,9 +302,6 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                     {fps} FPS | Annex B
                 </div>
             )}
-            <button onClick={toggleFullscreen} className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-black/70 rounded-md text-white">
-                {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
-            </button>
         </div>
     );
 };

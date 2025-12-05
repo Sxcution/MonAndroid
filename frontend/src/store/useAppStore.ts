@@ -65,6 +65,10 @@ interface AppStore {
 
     // Helper to get devices sorted by slot
     getDevicesBySlot: () => (Device | null)[];
+
+    // Shared expand button position
+    expandButtonPosition: { x: number; y: number };
+    setExpandButtonPosition: (position: { x: number; y: number }) => void;
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -201,4 +205,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // Return array with device or null for each slot
         return slots.map(([deviceId, _slotIdx]) => deviceMap.get(deviceId) || null);
     },
+
+    expandButtonPosition: { x: 10, y: 10 },
+    setExpandButtonPosition: (position) => set({ expandButtonPosition: position }),
 }));

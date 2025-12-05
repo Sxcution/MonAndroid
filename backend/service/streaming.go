@@ -135,16 +135,35 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 	return nil
 }
 
+// cleanupStream is internal cleanup called from goroutine defer
+// Does NOT re-acquire locks to avoid deadlock
+func (s *StreamingService) cleanupStream(deviceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream, exists := s.streams[deviceID]
+	if !exists {
+		return // Already cleaned up
+	}
+
+	// Kill H.264 process (best effort, ignore errors)
+	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
+		stream.h264Cmd.Process.Kill()
+	}
+
+	delete(s.streams, deviceID)
+}
+
 // consumeH264 reads raw H.264 stream and broadcasts NAL units
 // Uses buffer accumulation strategy to avoid any byte loss
 func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	defer r.Close()
 	defer func() {
-		fmt.Printf("H.264 consumer exiting for device %s\n", deviceID)
-		s.StopStreaming(deviceID)
+		log.Printf("✅ Stream ended: %s", deviceID)
+		s.cleanupStream(deviceID)
 	}()
 
-	fmt.Printf("🎬 H.264 consumer started for device %s (Buffer Strategy)\n", deviceID)
+	log.Printf("🎬 Started H.264 stream: %s", deviceID)
 
 	// Buffer chứa dữ liệu tích lũy
 	accBuf := make([]byte, 0, 1024*1024)
@@ -153,40 +172,12 @@ func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
 	readBuf := make([]byte, 4096)
 
 	frameCount := 0
-	debugDumped := false // Track if we dumped initial bytes
 
 	for {
 		// 1. Đọc dữ liệu mới từ stream
 		n, err := r.Read(readBuf)
 		if n > 0 {
 			accBuf = append(accBuf, readBuf[:n]...)
-
-			// DEBUG: Dump first 200 bytes to analyze NAL structure
-			if !debugDumped && len(accBuf) >= 200 {
-				fmt.Printf("🔍 DEBUG: First 200 bytes of H.264 stream:\n")
-				hexStr := fmt.Sprintf("%x", accBuf[:200])
-				for i := 0; i < len(hexStr); i += 64 {
-					end := i + 64
-					if end > len(hexStr) {
-						end = len(hexStr)
-					}
-					fmt.Printf("%s\n", hexStr[i:end])
-				}
-				// Look for NAL types
-				fmt.Printf("\n🔍 Looking for NAL units in first 200 bytes:\n")
-				for i := 0; i < 197; i++ {
-					if accBuf[i] == 0 && accBuf[i+1] == 0 {
-						if accBuf[i+2] == 1 {
-							nalType := accBuf[i+3] & 0x1F
-							fmt.Printf("  Offset %d: Start code 00 00 01, NAL type %d\n", i, nalType)
-						} else if i < 196 && accBuf[i+2] == 0 && accBuf[i+3] == 1 {
-							nalType := accBuf[i+4] & 0x1F
-							fmt.Printf("  Offset %d: Start code 00 00 00 01, NAL type %d\n", i, nalType)
-						}
-					}
-				}
-				debugDumped = true
-			}
 		}
 
 		if err != nil {
@@ -285,7 +276,7 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 		}
 	}
 
-	// --- LOGIC MỚI: Cache SPS/PPS ---
+	// Cache SPS/PPS headers for new subscribers
 	if nalType == 7 || nalType == 8 {
 		s.mu.RLock()
 		stream, exists := s.streams[deviceID]
@@ -293,27 +284,15 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 
 		if exists {
 			stream.mu.Lock()
-			// Lưu lại packet đầy đủ (có cả length prefix) để gửi thẳng cho client mới
 			if nalType == 7 {
 				stream.spsPkt = make([]byte, len(pkt))
 				copy(stream.spsPkt, pkt)
-				fmt.Printf("📦 Device %s: Cached SPS (seq %d)\n", deviceID, *frameCount)
 			} else if nalType == 8 {
 				stream.ppsPkt = make([]byte, len(pkt))
 				copy(stream.ppsPkt, pkt)
-				fmt.Printf("📦 Device %s: Cached PPS (seq %d)\n", deviceID, *frameCount)
 			}
 			stream.mu.Unlock()
 		}
-	}
-	// --------------------------------
-
-	if nalType == 7 {
-		fmt.Printf("📦 Device %s: Sent SPS (seq %d)\n", deviceID, *frameCount)
-	} else if nalType == 8 {
-		fmt.Printf("📦 Device %s: Sent PPS (seq %d)\n", deviceID, *frameCount)
-	} else if *frameCount%30 == 0 {
-		fmt.Printf("📺 Device %s: NAL seq %d\n", deviceID, *frameCount)
 	}
 }
 
