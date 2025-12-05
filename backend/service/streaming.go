@@ -173,6 +173,14 @@ func (s *StreamingService) streamWithScrcpy(stream *deviceStream) {
 		return
 	}
 
+	// TCP optimizations for real-time streaming
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)        // Disable Nagle algorithm
+		tc.SetReadBuffer(1 << 20)  // 1MB read buffer
+		tc.SetWriteBuffer(1 << 20) // 1MB write buffer
+		log.Printf("⚡ [%s] TCP optimizations applied (NoDelay, 1MB buffers)", stream.deviceID)
+	}
+
 	log.Printf("🎬 Started H.264 stream from scrcpy: %s", stream.deviceID)
 
 	// Consume H.264 stream (blocks until stream ends or context cancelled)
@@ -186,8 +194,8 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 	// Buffer chứa dữ liệu tích lũy
 	accBuf := make([]byte, 0, 1024*1024)
 
-	// Buffer tạm để đọc từ stream
-	readBuf := make([]byte, 4096)
+	// Buffer tạm để đọc từ stream (64KB for high throughput)
+	readBuf := make([]byte, 65536)
 
 	frameCount := 0
 

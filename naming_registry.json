@@ -33,6 +33,13 @@
             "action_dispatcher": "ActionDispatcher",
             "streaming_service": "StreamingService",
             "scrcpy_client": "ScrcpyClient"
+        },
+        "scrcpy_protocol": {
+            "version": "3.3.3",
+            "scid_format": "31-bit HEX (0x00000000-0x7FFFFFFF)",
+            "scid_comment": "Server uses Java Integer.parseInt(hex, 16), must stay under 0x80000000",
+            "stream_mode": "raw_stream=true (pure H.264 Annex-B)",
+            "socket_name_format": "scrcpy_{scid_hex_8chars}"
         }
     },
     "frontend_identifiers": {

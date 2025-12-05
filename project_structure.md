@@ -1,4 +1,4 @@
-# MonAndroid - Project Structure (Updated)
+# MonAndroid - Project Structure
 
 ## Overview
 Multi-device Android control system with Go backend (ADB/H.264) and React/Electron frontend (WebCodecs).
@@ -6,71 +6,131 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
 ## Root Files
 - `README.md`: Setup instructions
 - `naming_registry.json`: Centralized naming conventions
-- `project_structure.md`: Architecture documentation
+- `project_structure.md`: Architecture documentation (this file)
 - `run_all.bat`: Quick start script to launch backend and frontend
+- `STATUS_REPORT.md`: Development status and notes
 
 ---
 
 ## Backend (`backend/`)
 
-### Core Services
-- `main.go`: Entry point, server initialization.
-- `service/streaming.go`:
-  - Manages H.264 streams using **Scrcpy server** (v1.24) with **context-based lifecycle**.
-  - **Protocol:** Reads raw H.264 (Annex B) from TCP socket, wraps in custom binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`.
-  - **No time limit:** Scrcpy has no 3-minute limit like screenrecord.
-- `service/scrcpy_client.go`:
-  - Manages scrcpy-server lifecycle: push jar, ADB forward, start server, TCP handshake.
-  - **Protocol v1.24:** Uses key=value args (`send_frame_meta=false` for pure Annex-B).
-  - **Handshake:** Reads 1 dummy byte + 64-byte device name + 4-byte resolution.
-- `service/device_manager.go`: Scans and manages device list/status.
-- `service/action_dispatcher.go`: Handles input events (Touch, Key, Text) via ADB.
+### Entry Point
+- `main.go`: Server initialization, starts HTTP/WebSocket servers
 
-### ADB Integration
-- `adb/adb.go`:
-  - Wraps ADB commands with device targeting.
-  - **Methods:** `PushFile`, `Forward`, `RemoveForward`, `ExecuteCommandBackground`.
-  - Parsers for device info and screen resolution (handling "Override size").
+### Core Services (`service/`)
+- `streaming.go`:
+  - Manages H.264 streams using **scrcpy server v3.3.3** with context-based lifecycle
+  - **Protocol:** Reads raw H.264 (Annex B) from TCP socket
+  - Wraps in binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`
+  
+- `scrcpy_client.go`:
+  - Manages scrcpy-server lifecycle: push jar, ADB forward, start server, TCP connect
+  - **Protocol v3.3.3:**
+    - `scid`: 31-bit random ID, sent as **8-char HEX** (e.g., `scid=3db7a2f1`)
+    - Must be < `0x80000000` (Java's `Integer.parseInt(hex, 16)` limit)
+    - Socket name: `scrcpy_{scid_hex}`
+    - `raw_stream=true`: Pure H.264 Annex-B, no handshake headers
+  
+- `device_manager.go`: Scans and manages device list/status
+- `action_dispatcher.go`: Handles input events (Touch, Key, Text) via ADB
 
-### Assets
-- `assets/scrcpy-server-v1.24.jar`: Scrcpy server binary pushed to device.
+### ADB Integration (`adb/`)
+- `adb.go`:
+  - Wraps ADB commands with device targeting
+  - **Methods:** `PushFile`, `Forward`, `RemoveForward`, `ExecuteCommandBackground`
+  - Parsers for device info and screen resolution
 
-### API Layer
-- `api/websocket.go`:
-  - **Hub:** Broadcasts binary messages to frontend.
-  - **Logic:** No longer subscribes to "all" by default.
-- `api/routes.go` & `api/handlers.go`: REST API endpoints.
+### Assets (`assets/`)
+- `scrcpy-server`: Scrcpy server binary v3.3.3 (pushed to device)
+- `scrcpy-server-v1.24.jar`: Legacy server (deprecated)
+
+### API Layer (`api/`)
+- `websocket.go`: Hub broadcasts binary messages to frontend
+- `routes.go` & `handlers.go`: REST API endpoints
+
+### Config (`config/`)
+- Configuration files for server settings
+
+### Models (`models/`)
+- Data structures for Device, Action, etc.
 
 ---
 
 ## Frontend (`frontend/`)
 
-### Architecture Highlights
-- **Runtime:** Electron + Vite + React 18.
-- **State:** Zustand (`useAppStore`).
-- **Network:** Singleton WebSocket Service (`wsService`).
+### Architecture
+- **Runtime:** Electron + Vite + React 18
+- **State:** Zustand (`useAppStore`)
+- **Network:** Singleton WebSocket Service
 
-### Key Components (`src/components/`)
+### Entry Points (`src/`)
+- `main.tsx`: React app entry
+- `App.tsx`: Main application component
+- `index.css`: Global styles
+
+### Components (`src/components/`)
 - `ScreenView.tsx`:
-  - **Decoder:** WebCodecs `VideoDecoder` in **Annex B mode** (no `description`).
-  - **Logic:** Auto-detects codec from SPS. Patches low-level SPS to 4.2. Stitches `SPS+PPS+IDR` for keyframes.
-  - **Filtering:** Parses binary header to filter NALs by `device.id`.
-  - **Recovery:** Auto-resets decoder on error.
-  - **Canvas:** Uses `canvasSizeRef` to track size and only update when changed, preventing context reset blur.
-  - **Keyframe Waiting:** Enforces WebCodecs requirement to receive keyframe (IDR) after configure before decoding P-frames.
+  - WebCodecs `VideoDecoder` in Annex B mode
+  - Auto-detects codec from SPS, patches SPS to 4.2
+  - Stitches `SPS+PPS+IDR` for keyframes
+  - Auto-resets decoder on error
+  
 - `DeviceCard.tsx`:
-  - **Hover Detection:** Expand button (magnifying glass) only visible on hover.
-  - **Global Position:** Expand button position shared across all cards via `useAppStore`.
-  - **Drag vs Click:** Distinguishes drag (>5px movement) from click to prevent accidental expand.
-  - **Aspect Ratio:** Uses `aspect-[9/16]` for consistent card height in grid.
-- `DeviceGrid.tsx`: Renders grid of `DeviceCard` with `auto-rows-fr` for equal height rows.
-- `SettingsModal.tsx`: Settings UI for FPS control (5-30), FPS indicator toggle, device name toggle.
-- `ControlPanel.tsx`: Modal for single device control (High res).
+  - Hover-visible expand button
+  - Drag vs Click detection (>5px)
+  - Aspect ratio: `9/16`
+
+- `DeviceGrid.tsx`: Grid layout with `auto-rows-fr`
+- `ControlPanel.tsx`: Single device control modal
+- `ExpandedDeviceView.tsx`: Full-screen device view
+- `SettingsModal.tsx`: FPS, display settings
+- `ActionBar.tsx`: Action buttons and controls
 
 ### Stores (`src/store/`)
-- `useAppStore.ts`: Main app state (devices, selection, expanded device, expand button position).
-- `useSettingsStore.ts`: User settings with localStorage persistence (targetFps, showFpsIndicator, showDeviceName).
+- `useAppStore.ts`: Main state (devices, selection, expanded)
+- `useSettingsStore.ts`: User settings with localStorage persistence
 
 ### Services (`src/services/`)
-- `websocket.ts`: **Singleton** class `WebSocketService`. Manages one single connection for the whole app.
-- `deviceService.ts`: Device control API wrapper.
+- `websocket.ts`: Singleton WebSocket manager
+- `deviceService.ts`: Device control API wrapper
+- `api.ts`: HTTP API client
+
+### Types (`src/types/`)
+- TypeScript interfaces for Device, Action, API responses
+
+### Utils (`src/utils/`)
+- Utility functions
+
+---
+
+## Key Protocol Notes (scrcpy 3.x)
+
+### SCID Generation
+```go
+// Must be 31-bit to stay in Java signed int32 range
+c.scid = rand.Uint32() & 0x7FFFFFFF
+
+// Passed as 8-char HEX (no 0x prefix)
+fmt.Sprintf("scid=%08x", c.scid)
+```
+
+### Server Args (v3.3.3 Real-Time Mode)
+```
+3.3.3
+scid=xxxxxxxx        # 8-char HEX, < 0x80000000
+log_level=debug
+video=true
+audio=false
+max_size=720
+video_bit_rate=8000000   # 8Mbps for real-time
+max_fps=60               # 60fps for smooth interaction
+tunnel_forward=true
+control=false
+raw_stream=true          # Pure H.264 Annex-B output
+```
+
+### Real-Time Optimizations Applied
+- **WebSocket Buffer:** 16 frames (was 64), aggressive frame dropping
+- **TCP:** `SetNoDelay(true)`, 1MB read/write buffers
+- **Read Buffer:** 64KB chunks (was 4KB)
+- **Result:** ~100-200ms latency, prioritizes current state over frame completeness

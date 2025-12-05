@@ -101,15 +101,14 @@ func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 			select {
 			case client.send <- messageBytes:
 			default:
-				// Channel full - drop oldest and try again (backpressure)
-				select {
-				case <-client.send:
-				default:
+				// Real-time mode: drain old frames, keep only newest
+				for len(client.send) > 1 {
+					<-client.send
 				}
 				select {
 				case client.send <- messageBytes:
 				default:
-					log.Printf("⚠️ Client channel full, skipping frame")
+					// Still full, skip this frame
 				}
 			}
 		}
@@ -152,7 +151,7 @@ func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Con
 	client := &Client{
 		hub:        hub,
 		conn:       conn,
-		send:       make(chan []byte, 64), // Tăng buffer lên chút
+		send:       make(chan []byte, 16), // Real-time mode: small buffer, drop old frames
 		subscribed: make(map[string]bool),
 		ss:         ss, // Gán service
 	}

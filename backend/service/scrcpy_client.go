@@ -91,8 +91,8 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		"video=true",
 		"audio=false",
 		"max_size=720",
-		"video_bit_rate=2000000",
-		"max_fps=30",
+		"video_bit_rate=1000000", // 8Mbps for real-time mode
+		"max_fps=30",             // 60fps for smooth interaction
 		"tunnel_forward=true",
 		"control=false",
 		"raw_stream=true", // Pure H.264 Annex-B, no headers/meta
