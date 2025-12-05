@@ -1,13 +1,25 @@
 @echo off
+echo Stopping all backend and frontend processes...
 
-:: Start Backend (using air if available, otherwise go run)
+:: Kill all Go backend processes
+taskkill /F /IM go.exe 2>nul
+taskkill /F /IM air.exe 2>nul
+taskkill /F /IM main.exe 2>nul
+
+:: Kill all Node/NPM frontend processes
+taskkill /F /IM node.exe 2>nul
+
+echo Waiting for processes to terminate...
+timeout /t 2 /nobreak >nul
+
+echo Starting Backend...
 if exist "C:\Users\Mon\Desktop\MonAndroid\backend\.air.toml" (
     start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\backend && air -c .air.toml"
 ) else (
     start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\backend && go run ./..."
 )
 
-:: Start Frontend
+echo Starting Frontend...
 start "Frontend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\frontend && npm run dev"
 
 exit

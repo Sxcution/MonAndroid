@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -180,8 +181,14 @@ func (s *StreamingService) streamLoop(stream *deviceStream) {
 		stream.h264Cmd = cmd
 		s.mu.Unlock()
 
+		// Create context for this stream cycle
+		ctx, cancel := context.WithCancel(context.Background())
+
 		// Consume H.264 stream (blocks until stream ends ~3 min or error)
-		s.consumeH264(stream.deviceID, h264Stream)
+		s.consumeH264(ctx, stream.deviceID, h264Stream)
+
+		// Cancel context and cleanup
+		cancel()
 
 		// Stream ended, cleanup process
 		if cmd.Process != nil {
@@ -196,7 +203,7 @@ func (s *StreamingService) streamLoop(stream *deviceStream) {
 
 // consumeH264 reads raw H.264 stream and broadcasts NAL units
 // Note: cleanup is handled by streamLoop, not here
-func (s *StreamingService) consumeH264(deviceID string, r io.ReadCloser) {
+func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r io.ReadCloser) {
 	defer r.Close()
 
 	log.Printf("🎬 Started H.264 stream: %s", deviceID)

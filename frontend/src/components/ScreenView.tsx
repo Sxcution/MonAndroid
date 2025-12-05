@@ -1,5 +1,4 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/utils/helpers';
 import { deviceService } from '@/services/deviceService';
 import { Device } from '@/types/device';
@@ -29,11 +28,13 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     const decoderRef = useRef<VideoDecoder | null>(null);
     const frameCountRef = useRef(0);
     const lastFpsUpdateRef = useRef(Date.now());
+    const canvasSizeRef = useRef({ width: 0, height: 0 }); // Track canvas size to avoid unnecessary resets
 
     // Cache SPS/PPS để ghép vào Keyframe
     const spsRef = useRef<Uint8Array | null>(null);
     const ppsRef = useRef<Uint8Array | null>(null);
     const hasConfiguredRef = useRef(false);
+    const waitingForKeyframeRef = useRef(false); // Track if waiting for keyframe after configure
 
     // Refs cho Swipe logic
     const dragStartRef = useRef<{ x: number, y: number, t: number } | null>(null);
@@ -63,27 +64,48 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
             try { decoderRef.current.reset(); } catch { }
         }
         hasConfiguredRef.current = false;
+        waitingForKeyframeRef.current = false;
         spsRef.current = null;
         ppsRef.current = null;
         console.log("🔄 Decoder reset");
     }, []);
 
     useEffect(() => {
-        const ctx = canvasRef.current?.getContext('2d', { alpha: false }); // alpha: false để tối ưu
-
         const decoder = new VideoDecoder({
             output: (frame) => {
-                if (ctx && canvasRef.current) {
-                    // Vẽ frame lên canvas
-                    ctx.drawImage(frame, 0, 0, canvasRef.current.width, canvasRef.current.height);
+                const canvas = canvasRef.current;
+                if (!canvas) {
+                    frame.close();
+                    return;
                 }
+
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    frame.close();
+                    return;
+                }
+
+                // Only set canvas size if it actually changed (to prevent context reset/blur)
+                if (canvasSizeRef.current.width !== frame.displayWidth ||
+                    canvasSizeRef.current.height !== frame.displayHeight) {
+                    canvas.width = frame.displayWidth;
+                    canvas.height = frame.displayHeight;
+                    canvasSizeRef.current = { width: frame.displayWidth, height: frame.displayHeight };
+                    console.log(`🖼️ Canvas resized to ${canvas.width}x${canvas.height}`);
+                }
+
+                // Draw frame
+                ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
                 frame.close();
 
-                // Tính FPS
+                // FPS Counter - count rendered frames
                 frameCountRef.current++;
-                const now = Date.now();
-                if (now - lastFpsUpdateRef.current >= 1000) {
-                    setFps(frameCountRef.current);
+                const now = performance.now();
+                const elapsed = now - lastFpsUpdateRef.current;
+                if (elapsed >= 1000) {
+                    const currentFps = Math.round((frameCountRef.current * 1000) / elapsed);
+                    setFps(currentFps);
+                    console.log(`📊 FPS: ${currentFps}, showFpsIndicator: ${showFpsIndicator}`);
                     frameCountRef.current = 0;
                     lastFpsUpdateRef.current = now;
                 }
@@ -99,7 +121,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         return () => {
             if (decoder.state !== 'closed') decoder.close();
         };
-    }, [resetDecoder]);
+    }, [resetDecoder]); // REMOVED targetFps - we don't want to reset decoder when FPS changes!
 
     // --- 3. Handle Data ---
     useEffect(() => {
@@ -152,6 +174,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                         // KHÔNG truyền description khi dùng chế độ Annex B
                     });
                     hasConfiguredRef.current = true;
+                    waitingForKeyframeRef.current = true; // MUST wait for keyframe after configure!
                 } catch (e) {
                     console.error('Config failed:', e);
                     resetDecoder();
@@ -160,6 +183,17 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
             // 3. Giải mã
             if (hasConfiguredRef.current && (nalType === 1 || nalType === 5)) {
+                // MUST receive keyframe first after configure!
+                if (waitingForKeyframeRef.current && nalType !== 5) {
+                    // Still waiting for keyframe, skip P-frames
+                    return;
+                }
+
+                // Clear waiting flag when we receive keyframe
+                if (nalType === 5) {
+                    waitingForKeyframeRef.current = false;
+                }
+
                 try {
                     let chunkData = nalUnit;
 
@@ -297,9 +331,10 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
                 onContextMenu={(e) => e.preventDefault()}
             />
+            {/* FPS Counter (Chỉ hiển thị nếu bật trong Settings) */}
             {showFpsIndicator && fps > 0 && (
-                <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs pointer-events-none">
-                    {fps} FPS | Annex B
+                <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm text-white px-2 py-1 rounded text-xs font-mono pointer-events-none z-10">
+                    {fps} FPS | {device.name || device.adb_device_id}
                 </div>
             )}
         </div>
