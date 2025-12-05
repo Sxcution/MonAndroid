@@ -117,11 +117,21 @@ function App() {
     }, [handleMouseMove]);
 
     // Drag selection handlers
+    const dragTargetRef = useRef<HTMLElement | null>(null);
+
     const handleDragStart = (e: React.MouseEvent) => {
-        // Only start drag with left mouse button, not on sidebar/modals, not with Ctrl (Ctrl+Click is for DeviceCard multi-select)
+        // Only start drag with left mouse button, not on sidebar/modals, not with Ctrl
         if (e.button !== 0) return;
         if (e.ctrlKey) return; // Ctrl+Click handled by DeviceCard
         if ((e.target as HTMLElement).closest('.sidebar, .modal')) return;
+
+        // IMPORTANT: Only start drag selection when clicking OUTSIDE device cards
+        // Clicking on a card should NOT start drag (to avoid conflict with phone swipe)
+        const clickedOnCard = (e.target as HTMLElement).closest('[data-device-id]');
+        if (clickedOnCard) return;
+
+        // Store target element
+        dragTargetRef.current = e.target as HTMLElement;
 
         setIsDragging(true);
         setDragStart({ x: e.clientX, y: e.clientY });
@@ -156,11 +166,16 @@ function App() {
     const handleDragEnd = () => {
         if (!isDragging) return;
 
-        // If drag distance is too small, treat as click (clear selection)
+        // If drag distance is too small, treat as click
         if (Math.abs(dragEnd.x - dragStart.x) < 10 && Math.abs(dragEnd.y - dragStart.y) < 10) {
-            clearDeviceSelection();
+            // Only clear selection if click was NOT on a device card (empty area)
+            const clickedOnCard = dragTargetRef.current?.closest('[data-device-id]');
+            if (!clickedOnCard) {
+                clearDeviceSelection();
+            }
             setIsDragging(false);
             setDragHighlightedDevices([]);
+            dragTargetRef.current = null;
             return;
         }
 

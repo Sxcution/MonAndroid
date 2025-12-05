@@ -83,15 +83,26 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
   - Auto-resets decoder on error
   
 - `DeviceCard.tsx`:
-  - Hover-visible expand button
-  - Drag vs Click detection (>5px)
-  - Aspect ratio: `9/16`
+  - `isDragHighlighted` prop for real-time drag selection preview
+  - Ctrl+Click for multi-select toggle
+  - Hover: light blue border, Selected: blue border + shadow
+  - Right-click: Go Back (no touch)
+  - Magnify button (w-5 h-5) with draggable position
+  - `data-device-id` attribute for selection detection
 
-- `DeviceGrid.tsx`: Grid layout with `auto-rows-fr`
+- `DeviceGrid.tsx`: 
+  - Grid layout with `repeat(auto-fill, minmax(120px, 1fr))`
+  - Passes `dragHighlightedDevices` to cards
+  
 - `ControlPanel.tsx`: Single device control modal
 - `ExpandedDeviceView.tsx`: Full-screen device view
-- `SettingsModal.tsx`: FPS, display settings
+- `SettingsModal.tsx`: FPS indicator, device name display settings
 - `ActionBar.tsx`: Action buttons and controls
+
+### App.tsx Features
+- **Drag-to-Select:** Selection box only starts when clicking OUTSIDE cards
+- **Clear Selection:** Only clears when clicking on empty area (not on cards)
+- **Sidebar:** Auto-hide, appears on left edge hover
 
 ### Stores (`src/store/`)
 - `useAppStore.ts`: Main state (devices, selection, expanded)

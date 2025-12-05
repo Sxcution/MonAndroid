@@ -68,7 +68,14 @@
             "set_expand_button_position": "setExpandButtonPosition",
             "show_device_name": "showDeviceName",
             "show_fps_indicator": "showFpsIndicator",
-            "target_fps": "targetFps"
+            "target_fps": "targetFps",
+            "is_dragging": "isDragging",
+            "drag_start": "dragStart",
+            "drag_end": "dragEnd",
+            "drag_highlighted_devices": "dragHighlightedDevices",
+            "is_drag_highlighted": "isDragHighlighted",
+            "decode_ms": "decodeMs",
+            "queue_len": "queueLen"
         },
         "types": {
             "device": "Device",
