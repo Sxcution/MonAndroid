@@ -20,6 +20,7 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
 ### Core Services (`service/`)
 - `streaming.go`:
   - Manages H.264 streams using **scrcpy server v3.3.3** with context-based lifecycle
+  - **Warm Session:** Viewer counting, 120s TTL, cached SPS/PPS/IDR for instant re-attach
   - **Protocol:** Reads raw H.264 (Annex B) from TCP socket
   - Wraps in binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`
   

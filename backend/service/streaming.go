@@ -17,6 +17,9 @@ type WebSocketBroadcaster interface {
 	BroadcastToAll(message interface{})
 }
 
+// Warm session TTL - keep stream alive after last viewer disconnects
+const warmSessionTTL = 120 * time.Second
+
 // StreamingService handles real-time screen streaming for devices
 type StreamingService struct {
 	deviceManager *DeviceManager
@@ -38,7 +41,11 @@ type deviceStream struct {
 	// Cache SPS/PPS headers để gửi cho client mới subscribe
 	spsPkt []byte
 	ppsPkt []byte
-	mu     sync.RWMutex // Mutex để bảo vệ header
+	// Warm session support
+	viewers    int          // Number of active WS subscribers
+	idleTimer  *time.Timer  // TTL countdown when viewers=0
+	lastIDRPkt []byte       // Cache last IDR for instant decoder lock
+	mu         sync.RWMutex // Mutex để bảo vệ header và state
 }
 
 // NewStreamingService creates a new streaming service
@@ -330,8 +337,8 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 		}
 	}
 
-	// Cache SPS/PPS headers for new subscribers
-	if nalType == 7 || nalType == 8 {
+	// Cache SPS/PPS/IDR for warm session support
+	if nalType == 5 || nalType == 7 || nalType == 8 {
 		s.mu.RLock()
 		stream, exists := s.streams[deviceID]
 		s.mu.RUnlock()
@@ -344,6 +351,10 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 			} else if nalType == 8 {
 				stream.ppsPkt = make([]byte, len(pkt))
 				copy(stream.ppsPkt, pkt)
+			} else if nalType == 5 {
+				// Cache last IDR for instant decoder lock on re-attach
+				stream.lastIDRPkt = make([]byte, len(pkt))
+				copy(stream.lastIDRPkt, pkt)
 			}
 			stream.mu.Unlock()
 		}
@@ -460,4 +471,102 @@ func (s *StreamingService) GetStreamHeaders(deviceID string) ([]byte, []byte) {
 	}
 
 	return sps, pps
+}
+
+// GetStreamData returns cached SPS/PPS/IDR packets for instant decoder lock
+// Used when client re-attaches to warm stream
+func (s *StreamingService) GetStreamData(deviceID string) (sps, pps, idr []byte) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, nil, nil
+	}
+
+	stream.mu.RLock()
+	defer stream.mu.RUnlock()
+
+	// Return copies for safety
+	if stream.spsPkt != nil {
+		sps = make([]byte, len(stream.spsPkt))
+		copy(sps, stream.spsPkt)
+	}
+	if stream.ppsPkt != nil {
+		pps = make([]byte, len(stream.ppsPkt))
+		copy(pps, stream.ppsPkt)
+	}
+	if stream.lastIDRPkt != nil {
+		idr = make([]byte, len(stream.lastIDRPkt))
+		copy(idr, stream.lastIDRPkt)
+	}
+
+	return sps, pps, idr
+}
+
+// AddViewer increments viewer count and cancels idle timer
+func (s *StreamingService) AddViewer(deviceID string) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	stream.viewers++
+	log.Printf("👁️ [%s] Viewer added (total: %d)", deviceID, stream.viewers)
+
+	// Cancel idle timer if running
+	if stream.idleTimer != nil {
+		stream.idleTimer.Stop()
+		stream.idleTimer = nil
+		log.Printf("⚡ [%s] Idle timer cancelled - stream stays warm", deviceID)
+	}
+}
+
+// RemoveViewer decrements viewer count and starts idle timer if no viewers
+func (s *StreamingService) RemoveViewer(deviceID string) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	if stream.viewers > 0 {
+		stream.viewers--
+	}
+	log.Printf("👁️ [%s] Viewer removed (remaining: %d)", deviceID, stream.viewers)
+
+	// Start idle timer if no viewers left
+	if stream.viewers == 0 && stream.idleTimer == nil {
+		log.Printf("⏱️ [%s] No viewers, starting %v idle timer", deviceID, warmSessionTTL)
+		stream.idleTimer = time.AfterFunc(warmSessionTTL, func() {
+			log.Printf("💤 [%s] Idle timeout reached, stopping warm stream", deviceID)
+			s.StopStreaming(deviceID)
+		})
+	}
+}
+
+// GetViewerCount returns the number of active viewers for a device
+func (s *StreamingService) GetViewerCount(deviceID string) int {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return 0
+	}
+
+	stream.mu.RLock()
+	defer stream.mu.RUnlock()
+	return stream.viewers
 }

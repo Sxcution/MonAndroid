@@ -169,6 +169,12 @@ func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Con
 // readPump handles incoming messages from the client (subscriptions)
 func (c *Client) readPump() {
 	defer func() {
+		// Warm session: decrement viewer count for all subscribed devices
+		if c.ss != nil {
+			for deviceID := range c.subscribed {
+				c.ss.RemoveViewer(deviceID)
+			}
+		}
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -199,9 +205,12 @@ func (c *Client) readPump() {
 						c.subscribed[deviceID] = true
 						log.Printf("Client subscribed to device %s", deviceID)
 
-						// --- LOGIC MỚI: Gửi ngay cached SPS/PPS ---
+						// Warm session: increment viewer count
 						if c.ss != nil {
-							sps, pps := c.ss.GetStreamHeaders(deviceID)
+							c.ss.AddViewer(deviceID)
+
+							// Send cached SPS + PPS + lastIDR for instant decoder lock
+							sps, pps, idr := c.ss.GetStreamData(deviceID)
 							if sps != nil {
 								log.Printf("📤 Sending cached SPS to new subscriber for %s", deviceID)
 								select {
@@ -218,13 +227,25 @@ func (c *Client) readPump() {
 									log.Printf("⚠️ Failed to send cached PPS (channel full)")
 								}
 							}
+							if idr != nil {
+								log.Printf("⚡ Sending cached IDR for instant decode on %s", deviceID)
+								select {
+								case c.send <- idr:
+								default:
+									log.Printf("⚠️ Failed to send cached IDR (channel full)")
+								}
+							}
 						}
-						// ------------------------------------------
 					}
 				case "unsubscribe":
 					if deviceID, ok := msg["device_id"].(string); ok {
 						delete(c.subscribed, deviceID)
 						log.Printf("Client unsubscribed from device %s", deviceID)
+
+						// Warm session: decrement viewer count
+						if c.ss != nil {
+							c.ss.RemoveViewer(deviceID)
+						}
 					}
 				}
 			}
