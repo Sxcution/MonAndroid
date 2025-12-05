@@ -208,6 +208,10 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 		// 1. Đọc dữ liệu mới từ stream
 		n, err := r.Read(readBuf)
 		if n > 0 {
+			// Log khi nhận data đầu tiên
+			if len(accBuf) == 0 && frameCount == 0 {
+				log.Printf("📥 [%s] First data chunk received: %d bytes", deviceID, n)
+			}
 			accBuf = append(accBuf, readBuf[:n]...)
 		}
 
@@ -280,6 +284,13 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 	}
 
 	*frameCount++
+
+	// Log periodic để theo dõi device nào đang stream
+	if *frameCount == 1 {
+		log.Printf("📹 [%s] First NAL received (%d bytes)", deviceID, len(nalData))
+	} else if *frameCount%200 == 0 {
+		log.Printf("📹 [%s] Streaming: %d NALs sent", deviceID, *frameCount)
+	}
 
 	// Gắn Device ID vào đầu packet để Frontend có thể filter
 	// Protocol mới: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]

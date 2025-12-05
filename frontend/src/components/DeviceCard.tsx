@@ -5,6 +5,7 @@ import { Search } from 'lucide-react'; // Dùng icon kính lúp
 import { cn } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
+import { deviceService } from '@/services/deviceService';
 
 interface DeviceCardProps {
     device: Device | null; // ✅ Now accepts null for disconnected slots
@@ -73,6 +74,13 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
             ref={containerRef}
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
+            onContextMenu={(e) => {
+                e.preventDefault(); // Chặn menu context mặc định
+                if (device && device.status === 'online') {
+                    deviceService.goBack(device.id);
+                    console.log(`📱 [${device.name}] Right-click → Back`);
+                }
+            }}
             className={cn(
                 'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
                 // Border màu xanh nếu được chọn, xám nếu chưa kết nối

@@ -70,6 +70,7 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	log.Printf("✅ [%s] ADB forward established", c.deviceADBID)
 
 	// Step 3: Start scrcpy server with v1.24 key=value arguments
+	// Cấu hình balance: mượt hơn nhưng vẫn tương thích máy cũ
 	log.Printf("🚀 [%s] Starting scrcpy server (v1.24)...", c.deviceADBID)
 	serverArgs := []string{
 		"CLASSPATH=/data/local/tmp/scrcpy-server.jar",
@@ -78,19 +79,19 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		"com.genymobile.scrcpy.Server",
 		"1.24",
 		"log_level=info",
-		"max_size=720",
-		"bit_rate=2000000",
-		"max_fps=30",
+		"max_size=800",
+		"bit_rate=2000000", // 2Mbps - balance quality/performance
+		"max_fps=30",       // 24fps - mượt hơn 15fps, vẫn an toàn
 		"lock_video_orientation=-1",
 		"tunnel_forward=true",
 		"control=false",
 		"display_id=0",
 		"show_touches=false",
 		"stay_awake=false",
-		"power_off_on_close=true",
-		"send_frame_meta=false", // CRITICAL: No 12-byte header per frame
-		"send_device_meta=true", // Keep 69-byte initial header
-		"send_dummy_byte=true",  // Keep 1-byte handshake
+		"power_off_on_close=false",
+		"send_frame_meta=false",
+		"send_device_meta=true",
+		"send_dummy_byte=true",
 		"raw_stream=false",
 	}
 
