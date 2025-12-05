@@ -293,7 +293,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 onMouseDown={handleMouseDown}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
-                className={cn("w-full h-full object-contain select-none", interactive ? "cursor-pointer" : "cursor-default")}
+                className={cn("absolute inset-0 w-full h-full object-fill select-none", interactive ? "cursor-pointer" : "cursor-default")}
                 // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
                 onContextMenu={(e) => e.preventDefault()}
             />

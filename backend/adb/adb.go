@@ -132,7 +132,7 @@ func (c *ADBClient) getScreenResolution(deviceID string) (string, error) {
 
 	outputStr := string(output)
 	lines := strings.Split(outputStr, "\n")
-	
+
 	var physicalSize string
 	var overrideSize string
 
@@ -216,7 +216,7 @@ func (c *ADBClient) ScreenCapture(deviceID string) ([]byte, error) {
 func (c *ADBClient) StartH264Stream(deviceID string) (io.ReadCloser, *exec.Cmd, error) {
 	// ✅ SỬA: Giảm Bitrate xuống 1Mbps và Size xuống thấp hơn để chạy được nhiều máy
 	bitrate := getEnv("H264_BITRATE", "1000000") // 1 Mbps default (đủ nét cho ô nhỏ)
-	size := getEnv("H264_SIZE", "600x1024")       // Giảm size để tối ưu cho grid view
+	size := getEnv("H264_SIZE", "600x1024")      // Giảm size để tối ưu cho grid view
 
 	// Build screenrecord command with H.264 output
 	// QUAN TRỌNG: Không được dùng --verbose khi output là "-" (stdout)
