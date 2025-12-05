@@ -17,7 +17,7 @@ class WebSocketService {
 
         this.isConnecting = true;
         console.log('🔌 WebSocket Connecting to', WS_URL);
-        
+
         this.ws = new WebSocket(WS_URL);
         this.ws.binaryType = 'arraybuffer';
 

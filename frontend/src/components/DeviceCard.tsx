@@ -4,6 +4,7 @@ import { ScreenView } from './ScreenView';
 import { Search } from 'lucide-react'; // Dùng icon kính lúp
 import { cn } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
+import { useSettingsStore } from '@/store/useSettingsStore';
 
 interface DeviceCardProps {
     device: Device | null; // ✅ Now accepts null for disconnected slots
@@ -15,6 +16,7 @@ interface DeviceCardProps {
 
 export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, onSelect, onExpand }) => {
     const { expandedDeviceId } = useAppStore();
+    const { showDeviceName } = useSettingsStore();
     const isExpanded = device ? expandedDeviceId === device.id : false;
 
     // Logic kéo thả nút kính lúp
@@ -107,7 +109,7 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                 )}
 
                 {/* Thông tin tên máy nhỏ ở đáy (nếu cần nhận biết) */}
-                {device && (
+                {showDeviceName && device && (
                     <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
                         {device.name || device.adb_device_id}
                     </div>

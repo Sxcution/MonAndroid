@@ -4,6 +4,7 @@ import { cn } from '@/utils/helpers';
 import { deviceService } from '@/services/deviceService';
 import { Device } from '@/types/device';
 import { wsService } from '@/services/websocket';
+import { useSettingsStore } from '@/store/useSettingsStore';
 
 interface ScreenViewProps {
     device: Device;
@@ -12,20 +13,23 @@ interface ScreenViewProps {
     quality?: 'low' | 'high';
 }
 
-export const ScreenView: React.FC<ScreenViewProps> = ({ 
-    device, 
+export const ScreenView: React.FC<ScreenViewProps> = ({
+    device,
     className,
-    interactive = true 
+    interactive = true
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 288, height: 600 });
     const [fps, setFps] = useState(0);
-    
+
+    // Settings
+    const { showFpsIndicator } = useSettingsStore();
+
     const decoderRef = useRef<VideoDecoder | null>(null);
     const frameCountRef = useRef(0);
     const lastFpsUpdateRef = useRef(Date.now());
-    
+
     // Cache SPS/PPS để ghép vào Keyframe
     const spsRef = useRef<Uint8Array | null>(null);
     const ppsRef = useRef<Uint8Array | null>(null);
@@ -56,7 +60,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     // --- 2. Decoder Setup (Annex B Mode) ---
     const resetDecoder = useCallback(() => {
         if (decoderRef.current && decoderRef.current.state !== 'closed') {
-            try { decoderRef.current.reset(); } catch {}
+            try { decoderRef.current.reset(); } catch { }
         }
         hasConfiguredRef.current = false;
         spsRef.current = null;
@@ -66,7 +70,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
     useEffect(() => {
         const ctx = canvasRef.current?.getContext('2d', { alpha: false }); // alpha: false để tối ưu
-        
+
         const decoder = new VideoDecoder({
             output: (frame) => {
                 if (ctx && canvasRef.current) {
@@ -104,10 +108,10 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
             if (!(data instanceof ArrayBuffer)) return;
 
             const buf = new Uint8Array(data);
-            
+
             // Protocol mới: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
             if (buf.byteLength < 2) return;
-            
+
             const idLen = buf[0];
             if (buf.byteLength < 1 + idLen) return;
 
@@ -116,7 +120,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
             // 🔥 LỌC: Nếu không phải ID của máy mình -> Bỏ qua ngay lập tức
             if (msgDeviceId !== device.id) {
-                return; 
+                return;
             }
 
             // Lấy NAL Data thực sự
@@ -138,9 +142,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 const compat = sps[startCodeLen + 2].toString(16).padStart(2, '0').toUpperCase();
                 const level = sps[startCodeLen + 3].toString(16).padStart(2, '0').toUpperCase();
                 const codecString = `avc1.${profile}${compat}${level}`;
-                
+
                 console.log(`🔧 Config Codec: ${codecString} (AnnexB Mode)`);
-                
+
                 try {
                     decoderRef.current.configure({
                         codec: codecString,
@@ -173,7 +177,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                     const chunk = new EncodedVideoChunk({
                         type: nalType === 5 ? 'key' : 'delta',
                         timestamp: performance.now() * 1000,
-                        data: chunkData 
+                        data: chunkData
                     });
 
                     if (decoderRef.current.decodeQueueSize < 5) {
@@ -186,20 +190,20 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         };
 
         const unsubscribe = wsService.subscribe(handleMessage);
-        
+
         // Gửi lệnh start
         wsService.sendMessage({ type: 'subscribe', device_id: device.id });
-        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => {});
+        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => { });
 
         return () => {
             unsubscribe();
             wsService.sendMessage({ type: 'unsubscribe', device_id: device.id });
-            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(() => {});
+            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(() => { });
         };
     }, [device.id, resetDecoder]);
 
     // --- XỬ LÝ TƯƠNG TÁC (SWIPE vs TAP) ---
-    
+
     const getCoords = (e: React.MouseEvent) => {
         if (!canvasRef.current || !device.resolution) return null;
         const match = device.resolution.match(/(\d+)x(\d+)/);
@@ -208,7 +212,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         const origW = parseInt(match[1]);
         const origH = parseInt(match[2]);
         const rect = canvasRef.current.getBoundingClientRect();
-        
+
         const x = Math.floor((e.clientX - rect.left) / rect.width * origW);
         const y = Math.floor((e.clientY - rect.top) / rect.height * origH);
         return { x, y };
@@ -224,7 +228,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
     const handleMouseUp = async (e: React.MouseEvent) => {
         if (!interactive || !dragStartRef.current) return;
-        
+
         const endCoords = getCoords(e);
         if (!endCoords) return;
 
@@ -239,9 +243,9 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
             console.log("Swiping:", start.x, start.y, "->", endCoords.x, endCoords.y);
             try {
                 await deviceService.swipe(
-                    device.id, 
-                    start.x, start.y, 
-                    endCoords.x, endCoords.y, 
+                    device.id,
+                    start.x, start.y,
+                    endCoords.x, endCoords.y,
                     Math.max(duration, 100) // Duration tối thiểu
                 );
             } catch (err) {
@@ -263,7 +267,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     const handleMouseLeave = () => {
         dragStartRef.current = null;
     };
-    
+
     // ... (Giữ nguyên logic fullscreen) ...
     const toggleFullscreen = () => {
         if (!canvasRef.current) return;
@@ -293,7 +297,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
                 onContextMenu={(e) => e.preventDefault()}
             />
-            {fps > 0 && (
+            {showFpsIndicator && fps > 0 && (
                 <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs pointer-events-none">
                     {fps} FPS | Annex B
                 </div>
@@ -310,7 +314,7 @@ function getNALType(data: Uint8Array): number {
     let offset = -1;
     if (data.length > 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) offset = 4;
     else if (data.length > 3 && data[0] === 0 && data[1] === 0 && data[2] === 1) offset = 3;
-    
+
     if (offset !== -1 && offset < data.length) return data[offset] & 0x1F;
     return -1;
 }

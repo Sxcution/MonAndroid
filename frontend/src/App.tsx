@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { DeviceGrid } from './components/DeviceGrid';
 import { ControlPanel } from './components/ControlPanel';
 import { ExpandedDeviceView } from './components/ExpandedDeviceView';
+import { SettingsModal } from './components/SettingsModal';
 import { useAppStore } from './store/useAppStore';
 import { wsService } from './services/websocket';
 import { api } from './services/api';
@@ -12,7 +13,8 @@ import {
     Type,
     Package,
     Wifi,
-    WifiOff
+    WifiOff,
+    Settings
 } from 'lucide-react';
 
 function App() {
@@ -31,6 +33,7 @@ function App() {
     const [isScanning, setIsScanning] = useState(false);
     const [batchInput, setBatchInput] = useState('');
     const [showBatchInput, setShowBatchInput] = useState(false);
+    const [showSettings, setShowSettings] = useState(false);
 
     // Load devices on mount
     useEffect(() => {
@@ -42,13 +45,13 @@ function App() {
         const checkConnection = () => {
             setConnected(wsService.isConnected);
         };
-        
+
         // Check immediately
         checkConnection();
-        
+
         // Check periodically
         const interval = setInterval(checkConnection, 1000);
-        
+
         return () => clearInterval(interval);
     }, [setConnected]);
 
@@ -154,6 +157,14 @@ function App() {
                                 <Trash2 size={16} />
                                 Clear Selection
                             </button>
+
+                            <button
+                                onClick={() => setShowSettings(true)}
+                                className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-md transition-colors"
+                            >
+                                <Settings size={16} />
+                                Settings
+                            </button>
                         </div>
 
                         {/* Batch operations */}
@@ -192,6 +203,11 @@ function App() {
                     device={selectedDeviceDetail}
                     onClose={() => selectDevice(null)}
                 />
+            )}
+
+            {/* Settings modal */}
+            {showSettings && (
+                <SettingsModal onClose={() => setShowSettings(false)} />
             )}
 
             {/* Batch input modal */}
