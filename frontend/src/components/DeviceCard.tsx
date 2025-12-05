@@ -6,16 +6,17 @@ import { cn } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
 
 interface DeviceCardProps {
-    device: Device;
+    device: Device | null; // ✅ Now accepts null for disconnected slots
+    slotIndex: number; // ✅ Stable slot index for identification
     isSelected: boolean;
     onSelect: () => void;
     onExpand: () => void;
 }
 
-export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected, onSelect, onExpand }) => {
+export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, onSelect, onExpand }) => {
     const { expandedDeviceId } = useAppStore();
-    const isExpanded = expandedDeviceId === device.id;
-    
+    const isExpanded = device ? expandedDeviceId === device.id : false;
+
     // Logic kéo thả nút kính lúp
     const btnRef = useRef<HTMLButtonElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -46,11 +47,11 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected,
         const handleMouseUp = () => {
             if (!isDraggingBtn.current || !containerRef.current) return;
             isDraggingBtn.current = false;
-            
+
             // Snap logic: Dính trái hoặc phải
             const rect = containerRef.current.getBoundingClientRect();
             const mid = rect.width / 2;
-            
+
             setBtnPos(prev => ({
                 x: prev.x < mid ? 2 : rect.width - 32, // 32 là size button + margin
                 y: prev.y
@@ -70,22 +71,29 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected,
             ref={containerRef}
             className={cn(
                 'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group',
-                // Border màu xanh nếu được chọn
-                isSelected ? 'border-blue-500' : 'border-gray-700 hover:border-gray-500'
+                // Border màu xanh nếu được chọn, xám nếu chưa kết nối
+                !device ? 'border-gray-800' :
+                    isSelected ? 'border-blue-500' : 'border-gray-700 hover:border-gray-500'
             )}
-            onClick={onSelect}
+            onClick={device ? onSelect : undefined}
         >
             {/* ScreenView Full Ô */}
             <div className="w-full h-full aspect-[9/16] bg-black relative">
-                {device.status === 'online' ? (
+                {device && device.status === 'online' ? (
                     <ScreenView
                         device={device}
                         className="w-full h-full"
                         interactive={true} // Cho phép click thẳng vào đây
                     />
                 ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-xs">
-                        Offline
+                    // ✅ Hiển thị "Chưa kết nối" cho null hoặc offline
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 text-xs gap-2">
+                        <div className="text-6xl font-bold text-gray-800">
+                            {String(slotIndex + 1).padStart(2, '0')}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                            {device ? 'Offline' : 'Chưa kết nối'}
+                        </div>
                     </div>
                 )}
 
@@ -99,13 +107,15 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, isSelected,
                 )}
 
                 {/* Thông tin tên máy nhỏ ở đáy (nếu cần nhận biết) */}
-                <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
-                    {device.name || device.adb_device_id}
-                </div>
+                {device && (
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
+                        {device.name || device.adb_device_id}
+                    </div>
+                )}
             </div>
 
-            {/* Nút Kính Lúp Draggable */}
-            {device.status === 'online' && (
+            {/* Nút Kính Lúp Draggable - Chỉ hiển thị khi device online */}
+            {device && device.status === 'online' && (
                 <button
                     ref={btnRef}
                     onMouseDown={handleMouseDownBtn}
