@@ -30,7 +30,9 @@
         },
         "services": {
             "device_manager": "DeviceManager",
-            "action_dispatcher": "ActionDispatcher"
+            "action_dispatcher": "ActionDispatcher",
+            "streaming_service": "StreamingService",
+            "scrcpy_client": "ScrcpyClient"
         }
     },
     "frontend_identifiers": {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os/exec"
+	"net"
 	"sync"
 	"time"
 )
@@ -27,12 +27,14 @@ type StreamingService struct {
 }
 
 type deviceStream struct {
-	deviceID    string
-	deviceADBID string
-	isStreaming bool
-	stopChan    chan bool
-	fps         int
-	h264Cmd     *exec.Cmd // H.264 screenrecord process
+	deviceID     string
+	deviceADBID  string
+	isStreaming  bool
+	stopChan     chan bool
+	fps          int
+	scrcpyClient *ScrcpyClient // Scrcpy client for this device
+	ctx          context.Context
+	cancel       context.CancelFunc
 	// Cache SPS/PPS headers để gửi cho client mới subscribe
 	spsPkt []byte
 	ppsPkt []byte
@@ -49,7 +51,7 @@ func NewStreamingService(dm *DeviceManager, wsHub WebSocketBroadcaster) *Streami
 	}
 }
 
-// StartStreaming starts streaming for a specific device with auto-restart loop
+// StartStreaming starts streaming for a specific device using scrcpy
 func (s *StreamingService) StartStreaming(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,21 +75,31 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 		return fmt.Errorf("device offline: %s", deviceID)
 	}
 
+	// Create context for this stream
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create scrcpy client
+	adbClient := s.deviceManager.GetADBClient()
+	scrcpyClient := NewScrcpyClient(adbClient, device.ADBDeviceID)
+
 	// Create stream object
 	stream := &deviceStream{
-		deviceID:    deviceID,
-		deviceADBID: device.ADBDeviceID,
-		isStreaming: true, // User wants to stream
-		stopChan:    make(chan bool),
-		fps:         30,
+		deviceID:     deviceID,
+		deviceADBID:  device.ADBDeviceID,
+		isStreaming:  true,
+		stopChan:     make(chan bool),
+		fps:          30,
+		scrcpyClient: scrcpyClient,
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	s.streams[deviceID] = stream
 
-	// Start auto-restart loop
-	go s.streamLoop(stream)
+	// Start streaming goroutine
+	go s.streamWithScrcpy(stream)
 
-	fmt.Printf("Started H.264 streaming with auto-restart for device %s\n", deviceID)
+	fmt.Printf("✅ Started scrcpy streaming for device %s\n", deviceID)
 	return nil
 }
 
@@ -99,15 +111,18 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 
 	stream, exists := s.streams[deviceID]
 	if !exists {
-		// CHANGE: Nếu không tìm thấy stream, coi như đã dừng thành công. Không báo lỗi nữa.
 		log.Printf("⚠️ StopStreaming called for %s but stream not found (already stopped)", deviceID)
 		return nil
 	}
 
 	stream.isStreaming = false
 
-	// Đóng channel để báo hiệu cho consumer dừng lại
-	// Cần kiểm tra xem channel đã đóng chưa để tránh panic
+	// Cancel context to signal goroutine to stop
+	if stream.cancel != nil {
+		stream.cancel()
+	}
+
+	// Close stopChan to signal stop (check if already closed)
 	select {
 	case <-stream.stopChan:
 		// Channel already closed
@@ -115,11 +130,9 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 		close(stream.stopChan)
 	}
 
-	// Kill H.264 screenrecord process if running
-	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
-		if err := stream.h264Cmd.Process.Kill(); err != nil {
-			log.Printf("Warning: failed to kill H.264 process for %s: %v", deviceID, err)
-		}
+	// Stop scrcpy client (handles process kill, socket close, forward removal)
+	if stream.scrcpyClient != nil {
+		stream.scrcpyClient.Stop()
 	}
 
 	delete(s.streams, deviceID)
@@ -129,7 +142,6 @@ func (s *StreamingService) StopStreaming(deviceID string) error {
 }
 
 // cleanupStream is internal cleanup called from goroutine defer
-// Does NOT re-acquire locks to avoid deadlock
 func (s *StreamingService) cleanupStream(deviceID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,74 +151,37 @@ func (s *StreamingService) cleanupStream(deviceID string) {
 		return // Already cleaned up
 	}
 
-	// Kill H.264 process (best effort, ignore errors)
-	if stream.h264Cmd != nil && stream.h264Cmd.Process != nil {
-		stream.h264Cmd.Process.Kill()
+	// Stop scrcpy client
+	if stream.scrcpyClient != nil {
+		stream.scrcpyClient.Stop()
 	}
 
 	delete(s.streams, deviceID)
 }
 
-// streamLoop manages the auto-restart cycle for H.264 streaming
-// Automatically restarts stream when it ends (every ~3 minutes default)
-func (s *StreamingService) streamLoop(stream *deviceStream) {
+// streamWithScrcpy manages the scrcpy streaming for a device
+func (s *StreamingService) streamWithScrcpy(stream *deviceStream) {
 	defer func() {
-		log.Printf("🛑 Stream loop ended for %s", stream.deviceID)
+		log.Printf("🛑 Scrcpy stream ended for %s", stream.deviceID)
 		s.cleanupStream(stream.deviceID)
 	}()
 
-	for {
-		// Check if user stopped the stream
-		s.mu.RLock()
-		isStreaming := stream.isStreaming
-		s.mu.RUnlock()
-
-		if !isStreaming {
-			return // Exit loop if user stopped streaming
-		}
-
-		// Start ADB screenrecord process
-		log.Printf("🔄 Starting ADB screenrecord for %s...", stream.deviceID)
-		adbClient := s.deviceManager.GetADBClient()
-		h264Stream, cmd, err := adbClient.StartH264Stream(stream.deviceADBID)
-
-		if err != nil {
-			log.Printf("❌ Failed to start ADB for %s: %v. Retrying in 2s...", stream.deviceID, err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		// Update cmd reference for cleanup
-		s.mu.Lock()
-		stream.h264Cmd = cmd
-		s.mu.Unlock()
-
-		// Create context for this stream cycle
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Consume H.264 stream (blocks until stream ends ~3 min or error)
-		s.consumeH264(ctx, stream.deviceID, h264Stream)
-
-		// Cancel context and cleanup
-		cancel()
-
-		// Stream ended, cleanup process
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-
-		log.Printf("⚠️ Stream cycle ended for %s (3 min limit). Restarting immediately...", stream.deviceID)
-		// No sleep here for fastest restart
+	// Start scrcpy and get the connection
+	conn, err := stream.scrcpyClient.Start()
+	if err != nil {
+		log.Printf("❌ Failed to start scrcpy for %s: %v", stream.deviceID, err)
+		return
 	}
+
+	log.Printf("🎬 Started H.264 stream from scrcpy: %s", stream.deviceID)
+
+	// Consume H.264 stream (blocks until stream ends or context cancelled)
+	s.consumeH264(stream.ctx, stream.deviceID, conn)
 }
 
 // consumeH264 reads raw H.264 stream and broadcasts NAL units
-// Note: cleanup is handled by streamLoop, not here
-func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r io.ReadCloser) {
-	defer r.Close()
-
-	log.Printf("🎬 Started H.264 stream: %s", deviceID)
+func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r io.Reader) {
+	log.Printf("🎬 Consuming H.264 stream: %s", deviceID)
 
 	// Buffer chứa dữ liệu tích lũy
 	accBuf := make([]byte, 0, 1024*1024)
@@ -217,6 +192,19 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 	frameCount := 0
 
 	for {
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			log.Printf("⏹️ Stream context cancelled for %s", deviceID)
+			return
+		default:
+		}
+
+		// Set read deadline to allow checking context periodically
+		if conn, ok := r.(net.Conn); ok {
+			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		}
+
 		// 1. Đọc dữ liệu mới từ stream
 		n, err := r.Read(readBuf)
 		if n > 0 {
@@ -224,6 +212,10 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 		}
 
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Timeout is expected, continue to check context
+				continue
+			}
 			if err != io.EOF {
 				log.Printf("Error reading H.264 stream for %s: %v", deviceID, err)
 			}
@@ -378,7 +370,23 @@ func (s *StreamingService) StopAllStreaming() {
 	for deviceID := range s.streams {
 		stream := s.streams[deviceID]
 		stream.isStreaming = false
-		close(stream.stopChan)
+
+		// Cancel context
+		if stream.cancel != nil {
+			stream.cancel()
+		}
+
+		// Stop scrcpy client
+		if stream.scrcpyClient != nil {
+			stream.scrcpyClient.Stop()
+		}
+
+		// Close stopChan
+		select {
+		case <-stream.stopChan:
+		default:
+			close(stream.stopChan)
+		}
 	}
 
 	s.streams = make(map[string]*deviceStream)

@@ -329,3 +329,46 @@ func (c *ADBClient) OpenApp(deviceID, packageName string) error {
 	}
 	return nil
 }
+
+// Forward creates ADB port forwarding from local TCP port to remote abstract socket
+// Example: adb -s <deviceID> forward tcp:27183 localabstract:scrcpy
+func (c *ADBClient) Forward(deviceID string, localPort int, remoteSocket string) error {
+	cmd := exec.Command(c.ADBPath, "-s", deviceID, "forward",
+		fmt.Sprintf("tcp:%d", localPort),
+		fmt.Sprintf("localabstract:%s", remoteSocket))
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("adb forward failed: %w", err)
+	}
+	return nil
+}
+
+// RemoveForward removes ADB port forwarding for the specified local port
+func (c *ADBClient) RemoveForward(deviceID string, localPort int) error {
+	cmd := exec.Command(c.ADBPath, "-s", deviceID, "forward", "--remove",
+		fmt.Sprintf("tcp:%d", localPort))
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("adb forward remove failed: %w", err)
+	}
+	return nil
+}
+
+// ExecuteCommandBackground starts a non-blocking shell command on the device
+// Returns the exec.Cmd for process management (caller must handle cleanup)
+func (c *ADBClient) ExecuteCommandBackground(deviceID string, args []string) (*exec.Cmd, error) {
+	// Build full command: adb -s <deviceID> shell <args...>
+	fullArgs := []string{"-s", deviceID, "shell"}
+	fullArgs = append(fullArgs, args...)
+
+	cmd := exec.Command(c.ADBPath, fullArgs...)
+
+	// Capture stderr for debugging
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start background command: %w", err)
+	}
+
+	return cmd, nil
+}

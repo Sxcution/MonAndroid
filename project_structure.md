@@ -16,19 +16,24 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
 ### Core Services
 - `main.go`: Entry point, server initialization.
 - `service/streaming.go`:
-  - Manages H.264 streams from ADB with **auto-restart loop** and **context-based lifecycle**.
-  - **Protocol:** Reads raw H.264 (Annex B), wraps it in custom binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`.
-  - **State:** Idempotent Start/Stop logic.
-  - **Auto-Restart:** Automatically restarts stream every 3 minutes for unlimited streaming (compatible with all devices).
-  - **Context Management:** Uses `context.Context` to properly manage stream lifecycle and prevent premature exits.
+  - Manages H.264 streams using **Scrcpy server** (v1.24) with **context-based lifecycle**.
+  - **Protocol:** Reads raw H.264 (Annex B) from TCP socket, wraps in custom binary packet: `[1 byte ID Len] + [Device ID] + [NAL Unit]`.
+  - **No time limit:** Scrcpy has no 3-minute limit like screenrecord.
+- `service/scrcpy_client.go`:
+  - Manages scrcpy-server lifecycle: push jar, ADB forward, start server, TCP handshake.
+  - **Protocol v1.24:** Uses key=value args (`send_frame_meta=false` for pure Annex-B).
+  - **Handshake:** Reads 1 dummy byte + 64-byte device name + 4-byte resolution.
 - `service/device_manager.go`: Scans and manages device list/status.
 - `service/action_dispatcher.go`: Handles input events (Touch, Key, Text) via ADB.
 
 ### ADB Integration
 - `adb/adb.go`:
-  - Wraps `screenrecord` command with default 3-minute limit (auto-restarted by streaming service).
-  - **Config:** Bitrate 2Mbps, Size 720x1280 for sharp streaming.
+  - Wraps ADB commands with device targeting.
+  - **Methods:** `PushFile`, `Forward`, `RemoveForward`, `ExecuteCommandBackground`.
   - Parsers for device info and screen resolution (handling "Override size").
+
+### Assets
+- `assets/scrcpy-server-v1.24.jar`: Scrcpy server binary pushed to device.
 
 ### API Layer
 - `api/websocket.go`:
