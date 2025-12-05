@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -407,7 +408,7 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 		}
 
 		if conn, ok := r.(net.Conn); ok {
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		}
 
 		n, err := r.Read(readBuf)
@@ -422,8 +423,15 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
+			// Handle "connection reset by peer" - can happen with ADB WiFi
+			errStr := err.Error()
+			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "forcibly closed") {
+				log.Printf("⚠️ [%s] Connection reset, retrying...", deviceID)
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
 			if err != io.EOF {
-				log.Printf("Error reading H.264 stream for %s: %v", deviceID, err)
+				log.Printf("❌ [%s] Stream read error: %v", deviceID, err)
 			}
 			return
 		}

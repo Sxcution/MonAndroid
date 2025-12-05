@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Device } from '@/types/device';
 import { ScreenView } from './ScreenView';
 import {
     X, ArrowLeft, Circle, Square, Power, Volume2, VolumeX,
@@ -68,14 +67,14 @@ export const ExpandedDeviceView: React.FC<ExpandedDeviceViewProps> = ({ deviceId
 
     return (
         // Không dùng inset-0 fixed overlay nữa để cho phép nhìn thấy grid phía sau
-        <div 
+        <div
             ref={windowRef}
             style={{ left: position.x, top: position.y }}
             className="fixed z-50 flex flex-row shadow-2xl border border-gray-600 rounded-lg overflow-hidden bg-gray-900 w-[400px] h-[700px] resize-y" // Kích thước cố định hoặc resize
         >
             {/* Thanh tiêu đề để kéo thả (Ở trên cùng hoặc viền) */}
             {/* Ở đây ta làm viền bao quanh để kéo */}
-            <div 
+            <div
                 ref={dragHeaderRef}
                 onMouseDown={handleMouseDown}
                 className="absolute top-0 left-0 w-full h-8 bg-gray-800 flex items-center justify-between px-2 cursor-move z-20 hover:bg-gray-700"
@@ -84,7 +83,7 @@ export const ExpandedDeviceView: React.FC<ExpandedDeviceViewProps> = ({ deviceId
                     <GripHorizontal size={14} />
                     <span className="font-bold">{device.name || device.id}</span>
                 </div>
-                <button 
+                <button
                     onClick={() => setExpandedDevice(null)}
                     className="text-gray-400 hover:text-white"
                 >
@@ -96,9 +95,9 @@ export const ExpandedDeviceView: React.FC<ExpandedDeviceViewProps> = ({ deviceId
             <div className="flex flex-1 mt-8 w-full h-[calc(100%-32px)]">
                 {/* Cột Màn hình (Trái) */}
                 <div className="flex-1 bg-black relative">
-                    <ScreenView 
-                        device={device} 
-                        className="w-full h-full" 
+                    <ScreenView
+                        device={device}
+                        className="w-full h-full"
                         interactive={true}
                     />
                 </div>
@@ -118,9 +117,9 @@ export const ExpandedDeviceView: React.FC<ExpandedDeviceViewProps> = ({ deviceId
                             <action.icon size={20} />
                         </button>
                     ))}
-                    
+
                     <div className="flex-1" />
-                    
+
                     <button className="p-2 rounded hover:bg-gray-600 text-gray-300">
                         <Keyboard size={20} />
                     </button>

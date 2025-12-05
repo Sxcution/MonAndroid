@@ -11,24 +11,29 @@ export const DeviceGrid: React.FC = () => {
         getDevicesBySlot,
     } = useAppStore();
 
-    // ✅ Get devices sorted by stable slot positions (includes null for disconnected)
     const deviceSlots = getDevicesBySlot();
 
     if (deviceSlots.length === 0) {
         return (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-                <Loader2 className="w-12 h-12 animate-spin text-primary mb-4" />
-                <h2 className="text-xl font-semibold mb-2">No devices found</h2>
-                <p className="text-muted-foreground">
-                    Connect your Android devices via USB and click "Scan Devices"
+            <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-gray-950">
+                <Loader2 className="w-12 h-12 animate-spin text-blue-500 mb-4" />
+                <h2 className="text-xl font-semibold mb-2 text-white">No devices found</h2>
+                <p className="text-gray-400">
+                    Hover on the left edge to open sidebar and scan devices
                 </p>
             </div>
         );
     }
 
     return (
-        <div className="p-4 overflow-y-auto h-full bg-gray-950">
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+        <div className="w-full h-full p-2 overflow-y-auto bg-gray-950 scrollbar-hide">
+            {/* Responsive grid - auto-fit columns based on screen size */}
+            <div
+                className="grid gap-1"
+                style={{
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+                }}
+            >
                 {deviceSlots.map((device, slotIndex) => (
                     <DeviceCard
                         key={`slot-${slotIndex}`}

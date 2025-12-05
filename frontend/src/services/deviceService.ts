@@ -1,5 +1,4 @@
 import { api } from './api';
-import { ActionRequest } from '@/types/action';
 import { ACTION_TYPES, KEY_CODES } from '@/utils/constants';
 
 /**

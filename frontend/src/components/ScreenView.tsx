@@ -4,32 +4,40 @@ import { deviceService } from '@/services/deviceService';
 import { Device } from '@/types/device';
 import { wsService } from '@/services/websocket';
 import { useSettingsStore } from '@/store/useSettingsStore';
+import { useAppStore } from '@/store/useAppStore';
 import { getAndroidKeycode, getMetaState, isPrintableKey } from '@/utils/keymap';
 
 interface ScreenViewProps {
     device: Device;
     className?: string;
-    interactive?: boolean; // Cho phép điều khiển hay không
+    interactive?: boolean;
     quality?: 'low' | 'high';
+    syncWithSelected?: boolean; // Sync actions with other selected devices
 }
 
 export const ScreenView: React.FC<ScreenViewProps> = ({
     device,
     className,
-    interactive = true
+    interactive = true,
+    syncWithSelected = false
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const [isFullscreen, setIsFullscreen] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 288, height: 600 });
     const [fps, setFps] = useState(0);
+    const [decodeMs, setDecodeMs] = useState(0); // Decode latency in ms
+    const [queueLen, setQueueLen] = useState(0);  // Decoder queue length
 
-    // Settings
+    // Settings and store
     const { showFpsIndicator } = useSettingsStore();
+    const { selectedDevices } = useAppStore();
 
     const decoderRef = useRef<VideoDecoder | null>(null);
     const frameCountRef = useRef(0);
-    const lastFpsUpdateRef = useRef(Date.now());
-    const canvasSizeRef = useRef({ width: 0, height: 0 }); // Track canvas size to avoid unnecessary resets
+    const lastFpsUpdateRef = useRef(performance.now()); // Use performance.now() consistently
+    const canvasSizeRef = useRef({ width: 0, height: 0 });
+    const lastDecodeStartRef = useRef<number>(0);
+    const decodeLatencyAccRef = useRef<number>(0);   // Accumulate latency
+    const decodeLatencyCountRef = useRef<number>(0); // Count samples
 
     // Cache SPS/PPS để ghép vào Keyframe
     const spsRef = useRef<Uint8Array | null>(null);
@@ -99,14 +107,35 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
                 frame.close();
 
-                // FPS Counter - count rendered frames
+                // Accumulate decode latency for averaging
+                if (lastDecodeStartRef.current > 0) {
+                    const lat = performance.now() - lastDecodeStartRef.current;
+                    decodeLatencyAccRef.current += lat;
+                    decodeLatencyCountRef.current++;
+                }
+
+                // FPS Counter - update ALL stats once per second (stable display)
                 frameCountRef.current++;
                 const now = performance.now();
                 const elapsed = now - lastFpsUpdateRef.current;
                 if (elapsed >= 1000) {
+                    // Calculate FPS
                     const currentFps = Math.round((frameCountRef.current * 1000) / elapsed);
                     setFps(currentFps);
-                    console.log(`📊 FPS: ${currentFps}, showFpsIndicator: ${showFpsIndicator}`);
+
+                    // Calculate average decode latency
+                    if (decodeLatencyCountRef.current > 0) {
+                        const avgLatency = Math.round(decodeLatencyAccRef.current / decodeLatencyCountRef.current);
+                        setDecodeMs(avgLatency);
+                        decodeLatencyAccRef.current = 0;
+                        decodeLatencyCountRef.current = 0;
+                    }
+
+                    // Update queue length
+                    if (decoderRef.current) {
+                        setQueueLen(decoderRef.current.decodeQueueSize || 0);
+                    }
+
                     frameCountRef.current = 0;
                     lastFpsUpdateRef.current = now;
                 }
@@ -216,6 +245,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                     });
 
                     if (decoderRef.current.decodeQueueSize < 5) {
+                        lastDecodeStartRef.current = performance.now();
                         decoderRef.current.decode(chunk);
                     }
                 } catch (e) {
@@ -260,6 +290,8 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (!interactive) return;
+        // Ctrl+Click is for selection, not touch
+        if (e.ctrlKey) return;
         const coords = getCoords(e);
         if (coords) {
             dragStartRef.current = { x: coords.x, y: coords.y, t: Date.now() };
@@ -278,26 +310,26 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         const dist = Math.sqrt(diffX * diffX + diffY * diffY);
         const duration = Date.now() - start.t;
 
-        // Ngưỡng để coi là Swipe (di chuyển > 10 pixel)
+        // Get devices to send action to (this device + others if syncing)
+        const targetDevices = syncWithSelected && selectedDevices.length > 1
+            ? selectedDevices
+            : [device.id];
+
         if (dist > 10) {
-            console.log("Swiping:", start.x, start.y, "->", endCoords.x, endCoords.y);
-            try {
-                await deviceService.swipe(
-                    device.id,
+            // Swipe
+            for (const deviceId of targetDevices) {
+                deviceService.swipe(
+                    deviceId,
                     start.x, start.y,
                     endCoords.x, endCoords.y,
-                    Math.max(duration, 100) // Duration tối thiểu
-                );
-            } catch (err) {
-                console.error("Swipe error:", err);
+                    Math.max(duration, 100)
+                ).catch(err => console.error(`Swipe error on ${deviceId}:`, err));
             }
         } else {
-            // Nếu di chuyển ít -> Coi là Tap
-            console.log("Tapping:", endCoords.x, endCoords.y);
-            try {
-                await deviceService.tap(device.id, endCoords.x, endCoords.y);
-            } catch (err) {
-                console.error("Tap error:", err);
+            // Tap
+            for (const deviceId of targetDevices) {
+                deviceService.tap(deviceId, endCoords.x, endCoords.y)
+                    .catch(err => console.error(`Tap error on ${deviceId}:`, err));
             }
         }
 
@@ -397,23 +429,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         }
     }, [device.id, interactive]);
 
-    // ... (Giữ nguyên logic fullscreen) ...
-    const toggleFullscreen = () => {
-        if (!canvasRef.current) return;
-        if (!isFullscreen) {
-            canvasRef.current.requestFullscreen();
-            setIsFullscreen(true);
-        } else {
-            document.exitFullscreen();
-            setIsFullscreen(false);
-        }
-    };
 
-    useEffect(() => {
-        const handler = () => setIsFullscreen(!!document.fullscreenElement);
-        document.addEventListener('fullscreenchange', handler);
-        return () => document.removeEventListener('fullscreenchange', handler);
-    }, []);
 
     return (
         <div className={cn('relative bg-black w-full h-full', className)}>
@@ -429,10 +445,10 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
                 // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
                 onContextMenu={(e) => e.preventDefault()}
             />
-            {/* FPS Counter (Chỉ hiển thị nếu bật trong Settings) */}
-            {showFpsIndicator && fps > 0 && (
-                <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm text-white px-2 py-1 rounded text-xs font-mono pointer-events-none z-10">
-                    {fps} FPS | {device.name || device.adb_device_id}
+            {/* FPS Counter with latency info (Chỉ hiển thị nếu bật trong Settings) */}
+            {showFpsIndicator && (
+                <div className="absolute top-1 left-1 bg-black/70 backdrop-blur-sm text-white px-1.5 py-0.5 rounded text-[10px] font-mono pointer-events-none z-10 leading-tight">
+                    <div>{fps} FPS | {decodeMs}ms | Q:{queueLen}</div>
                 </div>
             )}
         </div>

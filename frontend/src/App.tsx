@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { DeviceGrid } from './components/DeviceGrid';
 import { ControlPanel } from './components/ControlPanel';
 import { ExpandedDeviceView } from './components/ExpandedDeviceView';
@@ -8,13 +8,10 @@ import { wsService } from './services/websocket';
 import { api } from './services/api';
 import {
     RefreshCw,
-    Trash2,
-    Play,
-    Type,
-    Package,
+    Settings,
     Wifi,
     WifiOff,
-    Settings
+    Type
 } from 'lucide-react';
 
 function App() {
@@ -26,14 +23,22 @@ function App() {
         isConnected,
         setDevices,
         selectDevice,
-        clearDeviceSelection,
         setConnected,
+        clearDeviceSelection,
+        toggleDeviceSelection,
     } = useAppStore();
 
     const [isScanning, setIsScanning] = useState(false);
     const [batchInput, setBatchInput] = useState('');
     const [showBatchInput, setShowBatchInput] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const [sidebarVisible, setSidebarVisible] = useState(false);
+
+    // Drag selection state
+    const [isDragging, setIsDragging] = useState(false);
+    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    const [dragEnd, setDragEnd] = useState({ x: 0, y: 0 });
+    const containerRef = useRef<HTMLDivElement>(null);
 
     // Load devices on mount
     useEffect(() => {
@@ -45,13 +50,8 @@ function App() {
         const checkConnection = () => {
             setConnected(wsService.isConnected);
         };
-
-        // Check immediately
         checkConnection();
-
-        // Check periodically
         const interval = setInterval(checkConnection, 1000);
-
         return () => clearInterval(interval);
     }, [setConnected]);
 
@@ -84,7 +84,6 @@ function App() {
             alert('Please select devices first');
             return;
         }
-
         if (actionType === 'input') {
             setShowBatchInput(true);
         }
@@ -92,7 +91,6 @@ function App() {
 
     const executeBatchInput = async () => {
         if (!batchInput.trim() || selectedDevices.length === 0) return;
-
         try {
             await api.action.executeBatchAction(selectedDevices, {
                 type: 'input',
@@ -105,94 +103,178 @@ function App() {
         }
     };
 
+    // Sidebar hover detection
+    const handleMouseMove = useCallback((e: MouseEvent) => {
+        if (e.clientX <= 8) {
+            setSidebarVisible(true);
+        }
+    }, []);
+
+    useEffect(() => {
+        window.addEventListener('mousemove', handleMouseMove);
+        return () => window.removeEventListener('mousemove', handleMouseMove);
+    }, [handleMouseMove]);
+
+    // Drag selection handlers
+    const handleDragStart = (e: React.MouseEvent) => {
+        // Only start drag with left mouse button, not on sidebar or modals
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('.sidebar, .modal')) return;
+
+        setIsDragging(true);
+        setDragStart({ x: e.clientX, y: e.clientY });
+        setDragEnd({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleDragMove = (e: React.MouseEvent) => {
+        if (!isDragging) return;
+        setDragEnd({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleDragEnd = () => {
+        if (!isDragging) return;
+
+        // Calculate selection box
+        const minX = Math.min(dragStart.x, dragEnd.x);
+        const maxX = Math.max(dragStart.x, dragEnd.x);
+        const minY = Math.min(dragStart.y, dragEnd.y);
+        const maxY = Math.max(dragStart.y, dragEnd.y);
+
+        // If drag distance is too small, treat as click (clear selection)
+        if (Math.abs(dragEnd.x - dragStart.x) < 10 && Math.abs(dragEnd.y - dragStart.y) < 10) {
+            clearDeviceSelection();
+            setIsDragging(false);
+            return;
+        }
+
+        // Find all device cards that intersect with selection box
+        const cards = document.querySelectorAll('[data-device-id]');
+        cards.forEach(card => {
+            const rect = card.getBoundingClientRect();
+            const intersects = !(rect.right < minX || rect.left > maxX || rect.bottom < minY || rect.top > maxY);
+
+            if (intersects) {
+                const deviceId = card.getAttribute('data-device-id');
+                if (deviceId && !selectedDevices.includes(deviceId)) {
+                    toggleDeviceSelection(deviceId);
+                }
+            }
+        });
+
+        setIsDragging(false);
+    };
+
+    // Calculate selection box dimensions
+    const selectionBox = isDragging ? {
+        left: Math.min(dragStart.x, dragEnd.x),
+        top: Math.min(dragStart.y, dragEnd.y),
+        width: Math.abs(dragEnd.x - dragStart.x),
+        height: Math.abs(dragEnd.y - dragStart.y),
+    } : null;
+
     return (
-        <div className="min-h-screen bg-background">
-            {/* Header */}
-            <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-                <div className="container mx-auto px-4 py-4">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h1 className="text-2xl font-bold">Android Control</h1>
-                            <p className="text-sm text-muted-foreground">
-                                Multi-Device Control System
-                            </p>
-                        </div>
+        <div
+            ref={containerRef}
+            className="h-screen w-screen overflow-hidden bg-gray-950 relative select-none"
+            onMouseDown={handleDragStart}
+            onMouseMove={handleDragMove}
+            onMouseUp={handleDragEnd}
+            onMouseLeave={handleDragEnd}
+        >
+            {/* Selection Box */}
+            {selectionBox && selectionBox.width > 5 && selectionBox.height > 5 && (
+                <div
+                    className="fixed pointer-events-none z-50 border-2 border-blue-500 bg-blue-500/20"
+                    style={{
+                        left: selectionBox.left,
+                        top: selectionBox.top,
+                        width: selectionBox.width,
+                        height: selectionBox.height,
+                    }}
+                />
+            )}
 
-                        {/* Connection status */}
-                        <div className="flex items-center gap-2">
-                            {isConnected ? (
-                                <>
-                                    <Wifi className="text-green-500" size={20} />
-                                    <span className="text-sm text-green-500">Connected</span>
-                                </>
-                            ) : (
-                                <>
-                                    <WifiOff className="text-red-500" size={20} />
-                                    <span className="text-sm text-red-500">Disconnected</span>
-                                </>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            </header>
-
-            {/* Toolbar */}
-            <div className="sticky top-16 z-30 border-b bg-background/95 backdrop-blur">
-                <div className="container mx-auto px-4 py-3">
-                    <div className="flex items-center justify-between gap-4">
+            {/* Hidden Sidebar - appears on hover */}
+            <div
+                className={`sidebar fixed left-0 top-0 h-full z-50 transition-transform duration-300 ease-in-out ${sidebarVisible ? 'translate-x-0' : '-translate-x-full'
+                    }`}
+                onMouseLeave={() => setSidebarVisible(false)}
+            >
+                <div className="h-full w-56 bg-gray-900/95 backdrop-blur-md border-r border-gray-700 flex flex-col shadow-2xl">
+                    {/* Sidebar Header - Scan + Status on same row */}
+                    <div className="p-3 border-b border-gray-700">
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={handleScanDevices}
                                 disabled={isScanning}
-                                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md transition-colors disabled:opacity-50"
+                                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-colors text-sm font-medium"
                             >
                                 <RefreshCw size={16} className={isScanning ? 'animate-spin' : ''} />
-                                {isScanning ? 'Scanning...' : 'Scan Devices'}
+                                {isScanning ? 'Scanning...' : 'Scan'}
                             </button>
+                            {isConnected ? (
+                                <Wifi className="text-green-500" size={20} />
+                            ) : (
+                                <WifiOff className="text-red-500" size={20} />
+                            )}
+                        </div>
+                    </div>
 
-                            <button
-                                onClick={() => clearDeviceSelection()}
-                                className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-md transition-colors"
-                            >
-                                <Trash2 size={16} />
-                                Clear Selection
-                            </button>
+                    {/* Sidebar Actions */}
+                    <div className="flex-1 p-3 space-y-2">
+                        <button
+                            onClick={() => setShowSettings(true)}
+                            className="w-full flex items-center gap-3 px-4 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm"
+                        >
+                            <Settings size={18} />
+                            Settings
+                        </button>
 
-                            <button
-                                onClick={() => setShowSettings(true)}
-                                className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-md transition-colors"
-                            >
-                                <Settings size={16} />
-                                Settings
-                            </button>
+                        {/* Device count info */}
+                        <div className="mt-4 p-3 bg-gray-800/50 rounded-lg">
+                            <div className="text-xs text-gray-400">Devices</div>
+                            <div className="text-2xl font-bold text-white">
+                                {devices.filter(d => d.status === 'online').length}
+                                <span className="text-sm font-normal text-gray-500"> / {devices.length}</span>
+                            </div>
                         </div>
 
-                        {/* Batch operations */}
+                        {/* Selected devices */}
                         {selectedDevices.length > 0 && (
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm text-muted-foreground">
+                            <div className="mt-4 p-3 bg-blue-900/30 border border-blue-700/50 rounded-lg">
+                                <div className="text-xs text-blue-400 mb-2">
                                     {selectedDevices.length} device(s) selected
-                                </span>
-
+                                </div>
                                 <button
                                     onClick={() => handleBatchAction('input')}
-                                    className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent/80 rounded-md transition-colors"
+                                    className="w-full flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs"
                                 >
-                                    <Type size={16} />
+                                    <Type size={14} />
                                     Batch Input
                                 </button>
                             </div>
                         )}
                     </div>
+
+                    {/* Sidebar Footer */}
+                    <div className="p-3 border-t border-gray-700 text-xs text-gray-500 text-center">
+                        v1.0.0
+                    </div>
                 </div>
             </div>
 
-            {/* Main content */}
-            <main className="container mx-auto">
+            {/* Sidebar trigger zone */}
+            <div
+                className="fixed left-0 top-0 w-2 h-full z-40"
+                onMouseEnter={() => setSidebarVisible(true)}
+            />
+
+            {/* Main Content - Full Screen Grid */}
+            <main className="w-full h-full">
                 <DeviceGrid />
             </main>
 
-            {/* Expanded Device View (Phóng to) */}
+            {/* Expanded Device View */}
             {expandedDeviceId && (
                 <ExpandedDeviceView deviceId={expandedDeviceId} />
             )}
@@ -207,33 +289,35 @@ function App() {
 
             {/* Settings modal */}
             {showSettings && (
-                <SettingsModal onClose={() => setShowSettings(false)} />
+                <div className="modal">
+                    <SettingsModal onClose={() => setShowSettings(false)} />
+                </div>
             )}
 
             {/* Batch input modal */}
             {showBatchInput && (
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-                    <div className="bg-background rounded-lg shadow-2xl max-w-md w-full p-6">
-                        <h3 className="text-lg font-semibold mb-4">Batch Input</h3>
+                <div className="modal fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                    <div className="bg-gray-900 rounded-lg shadow-2xl max-w-md w-full p-6 border border-gray-700">
+                        <h3 className="text-lg font-semibold mb-4 text-white">Batch Input</h3>
                         <input
                             type="text"
                             value={batchInput}
                             onChange={(e) => setBatchInput(e.target.value)}
                             onKeyPress={(e) => e.key === 'Enter' && executeBatchInput()}
                             placeholder="Enter text to send to all selected devices..."
-                            className="w-full px-3 py-2 bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring mb-4"
+                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4 text-white"
                             autoFocus
                         />
                         <div className="flex gap-2 justify-end">
                             <button
                                 onClick={() => setShowBatchInput(false)}
-                                className="px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-md transition-colors"
+                                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-md transition-colors text-white"
                             >
                                 Cancel
                             </button>
                             <button
                                 onClick={executeBatchInput}
-                                className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md transition-colors"
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-md transition-colors text-white"
                             >
                                 Send
                             </button>
