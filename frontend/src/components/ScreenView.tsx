@@ -4,6 +4,7 @@ import { deviceService } from '@/services/deviceService';
 import { Device } from '@/types/device';
 import { wsService } from '@/services/websocket';
 import { useSettingsStore } from '@/store/useSettingsStore';
+import { getAndroidKeycode, getMetaState, isPrintableKey } from '@/utils/keymap';
 
 interface ScreenViewProps {
     device: Device;
@@ -225,14 +226,19 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
         const unsubscribe = wsService.subscribe(handleMessage);
 
-        // Gửi lệnh start
-        wsService.sendMessage({ type: 'subscribe', device_id: device.id });
-        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => { });
+        // Debounce subscribe to avoid rapid mount/unmount issues
+        const subscribeTimer = setTimeout(() => {
+            wsService.sendMessage({ type: 'subscribe', device_id: device.id });
+            // Start streaming if not already running (idempotent)
+            fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => { });
+        }, 100);
 
         return () => {
+            clearTimeout(subscribeTimer);
             unsubscribe();
+            // Only send unsubscribe - DO NOT call stop!
+            // Stream lifecycle is device-scoped, TTL will handle cleanup
             wsService.sendMessage({ type: 'unsubscribe', device_id: device.id });
-            fetch(`http://localhost:8080/api/streaming/stop/${device.id}`, { method: 'POST' }).catch(() => { });
         };
     }, [device.id, resetDecoder]);
 
@@ -302,6 +308,95 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         dragStartRef.current = null;
     };
 
+    // --- KEYBOARD HANDLERS ---
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (!interactive) return;
+        e.preventDefault();
+
+        // Ctrl+V = Paste from PC clipboard
+        if (e.ctrlKey && e.key === 'v') {
+            navigator.clipboard.readText().then(text => {
+                if (text) {
+                    wsService.sendMessage({
+                        type: 'clipboard',
+                        device_id: device.id,
+                        text: text,
+                        paste: true
+                    });
+                    console.log('📋 Pasting to device:', text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+                }
+            }).catch(err => {
+                console.error('Clipboard read failed:', err);
+            });
+            return;
+        }
+
+        // Ctrl+C = Android copy (send key event)
+        if (e.ctrlKey && e.key === 'c') {
+            wsService.sendMessage({
+                type: 'key',
+                device_id: device.id,
+                action: 0, // DOWN
+                keycode: 31, // KEYCODE_C
+                meta: 0x1000 // CTRL
+            });
+            setTimeout(() => {
+                wsService.sendMessage({
+                    type: 'key',
+                    device_id: device.id,
+                    action: 1, // UP
+                    keycode: 31,
+                    meta: 0
+                });
+            }, 50);
+            return;
+        }
+
+        // For printable characters, use text injection (better Unicode support)
+        if (isPrintableKey(e)) {
+            wsService.sendMessage({
+                type: 'text',
+                device_id: device.id,
+                text: e.key
+            });
+            return;
+        }
+
+        // For special keys (Enter, Backspace, arrows, etc.), use keycode injection
+        const keycode = getAndroidKeycode(e);
+        if (keycode !== null) {
+            wsService.sendMessage({
+                type: 'key',
+                device_id: device.id,
+                action: 0, // DOWN
+                keycode: keycode,
+                meta: getMetaState(e)
+            });
+        }
+    }, [device.id, interactive]);
+
+    const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
+        if (!interactive) return;
+        e.preventDefault();
+
+        // Skip printable keys (already handled in keydown via text injection)
+        if (isPrintableKey(e)) return;
+
+        // Skip Ctrl+V/C (handled in keydown)
+        if (e.ctrlKey && (e.key === 'v' || e.key === 'c')) return;
+
+        const keycode = getAndroidKeycode(e);
+        if (keycode !== null) {
+            wsService.sendMessage({
+                type: 'key',
+                device_id: device.id,
+                action: 1, // UP
+                keycode: keycode,
+                meta: getMetaState(e)
+            });
+        }
+    }, [device.id, interactive]);
+
     // ... (Giữ nguyên logic fullscreen) ...
     const toggleFullscreen = () => {
         if (!canvasRef.current) return;
@@ -324,10 +419,13 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
         <div className={cn('relative bg-black w-full h-full', className)}>
             <canvas
                 ref={canvasRef}
+                tabIndex={0}
                 onMouseDown={handleMouseDown}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
-                className={cn("absolute inset-0 w-full h-full object-fill select-none", interactive ? "cursor-pointer" : "cursor-default")}
+                onKeyDown={handleKeyDown}
+                onKeyUp={handleKeyUp}
+                className={cn("absolute inset-0 w-full h-full object-fill select-none outline-none", interactive ? "cursor-pointer" : "cursor-default")}
                 // Tắt menu chuột phải mặc định để trải nghiệm app tốt hơn
                 onContextMenu={(e) => e.preventDefault()}
             />

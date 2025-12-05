@@ -11,14 +11,28 @@ import (
 )
 
 // WebSocketBroadcaster interface to avoid import cycle
-// Supports both binary ([]byte) and JSON (interface{}) messages
 type WebSocketBroadcaster interface {
-	BroadcastToDevice(deviceID string, message interface{}) // Can be []byte or map
+	BroadcastToDevice(deviceID string, message interface{})
 	BroadcastToAll(message interface{})
 }
 
 // Warm session TTL - keep stream alive after last viewer disconnects
 const warmSessionTTL = 120 * time.Second
+
+// StreamState represents the lifecycle state of a device stream
+type StreamState int
+
+const (
+	StateStopped  StreamState = iota // Not running
+	StateStarting                    // scrcpy starting up
+	StateRunning                     // Actively streaming
+	StateIdle                        // Running but no viewers, waiting for TTL
+	StateStopping                    // Cleanup in progress
+)
+
+func (s StreamState) String() string {
+	return [...]string{"STOPPED", "STARTING", "RUNNING", "IDLE", "STOPPING"}[s]
+}
 
 // StreamingService handles real-time screen streaming for devices
 type StreamingService struct {
@@ -26,26 +40,31 @@ type StreamingService struct {
 	wsHub         WebSocketBroadcaster
 	streams       map[string]*deviceStream
 	mu            sync.RWMutex
-	stopChan      chan bool
 }
 
+// deviceStream holds the device-scoped context and state
+// Lives across multiple client sessions (not tied to any single client)
 type deviceStream struct {
 	deviceID     string
 	deviceADBID  string
-	isStreaming  bool
-	stopChan     chan bool
-	fps          int
-	scrcpyClient *ScrcpyClient // Scrcpy client for this device
-	ctx          context.Context
-	cancel       context.CancelFunc
-	// Cache SPS/PPS headers để gửi cho client mới subscribe
-	spsPkt []byte
-	ppsPkt []byte
-	// Warm session support
-	viewers    int          // Number of active WS subscribers
-	idleTimer  *time.Timer  // TTL countdown when viewers=0
-	lastIDRPkt []byte       // Cache last IDR for instant decoder lock
-	mu         sync.RWMutex // Mutex để bảo vệ header và state
+	scrcpyClient *ScrcpyClient
+
+	// State machine - protected by mu
+	state StreamState
+	mu    sync.Mutex
+
+	// Device-scoped context (not tied to any client)
+	devCtx    context.Context
+	devCancel context.CancelFunc
+
+	// Viewer management
+	viewers   int         // Number of active WS subscribers
+	idleTimer *time.Timer // TTL countdown when viewers=0
+
+	// Cached headers for instant client attach
+	spsPkt     []byte
+	ppsPkt     []byte
+	lastIDRPkt []byte
 }
 
 // NewStreamingService creates a new streaming service
@@ -54,457 +73,180 @@ func NewStreamingService(dm *DeviceManager, wsHub WebSocketBroadcaster) *Streami
 		deviceManager: dm,
 		wsHub:         wsHub,
 		streams:       make(map[string]*deviceStream),
-		stopChan:      make(chan bool),
 	}
 }
 
-// StartStreaming starts streaming for a specific device using scrcpy
+// StartStreaming starts or attaches to streaming for a device
+// Uses state machine to handle concurrent requests safely
 func (s *StreamingService) StartStreaming(deviceID string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	log.Printf("🚀 StartStreaming called for %s", deviceID)
-
-	// Check if already streaming
-	if stream, exists := s.streams[deviceID]; exists && stream.isStreaming {
-		log.Printf("Device %s is already streaming, returning success", deviceID)
-		return nil
-	}
-
-	// Get device info
-	device := s.deviceManager.GetDevice(deviceID)
-	if device == nil {
-		log.Printf("❌ Device not found in manager: %s", deviceID)
-		return fmt.Errorf("device not found: %s", deviceID)
-	}
-
-	if device.Status != "online" {
-		return fmt.Errorf("device offline: %s", deviceID)
-	}
-
-	// Create context for this stream
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Create scrcpy client
-	adbClient := s.deviceManager.GetADBClient()
-	scrcpyClient := NewScrcpyClient(adbClient, device.ADBDeviceID)
-
-	// Create stream object
-	stream := &deviceStream{
-		deviceID:     deviceID,
-		deviceADBID:  device.ADBDeviceID,
-		isStreaming:  true,
-		stopChan:     make(chan bool),
-		fps:          30,
-		scrcpyClient: scrcpyClient,
-		ctx:          ctx,
-		cancel:       cancel,
-	}
-
-	s.streams[deviceID] = stream
-
-	// Start streaming goroutine
-	go s.streamWithScrcpy(stream)
-
-	fmt.Printf("✅ Started scrcpy streaming for device %s\n", deviceID)
-	return nil
-}
-
-// StopStreaming stops streaming for a specific device
-// Idempotent: can be called multiple times safely
-func (s *StreamingService) StopStreaming(deviceID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	stream, exists := s.streams[deviceID]
 	if !exists {
-		log.Printf("⚠️ StopStreaming called for %s but stream not found (already stopped)", deviceID)
+		// Create new stream entry
+		device := s.deviceManager.GetDevice(deviceID)
+		if device == nil {
+			s.mu.Unlock()
+			return fmt.Errorf("device not found: %s", deviceID)
+		}
+		if device.Status != "online" {
+			s.mu.Unlock()
+			return fmt.Errorf("device offline: %s", deviceID)
+		}
+
+		stream = &deviceStream{
+			deviceID:    deviceID,
+			deviceADBID: device.ADBDeviceID,
+			state:       StateStopped,
+		}
+		s.streams[deviceID] = stream
+	}
+	s.mu.Unlock()
+
+	// Now work with the stream under its own lock
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	log.Printf("🚀 [%s] StartStreaming called (state=%s, viewers=%d)", deviceID, stream.state, stream.viewers)
+
+	switch stream.state {
+	case StateRunning, StateIdle:
+		// Stream already running - just increment viewers if needed
+		// Cancel idle timer if exists
+		if stream.idleTimer != nil {
+			stream.idleTimer.Stop()
+			stream.idleTimer = nil
+			log.Printf("⏱️ [%s] Idle timer cancelled", deviceID)
+		}
+		if stream.state == StateIdle {
+			stream.state = StateRunning
+			log.Printf("▶️ [%s] Resuming from IDLE to RUNNING", deviceID)
+		}
+		return nil
+
+	case StateStarting:
+		// Already starting, just wait
+		log.Printf("⏳ [%s] Already starting, skipping duplicate start", deviceID)
+		return nil
+
+	case StateStopping:
+		// Wait for stop to complete, or return busy
+		log.Printf("⏳ [%s] Currently stopping, please retry", deviceID)
+		return fmt.Errorf("stream is stopping, retry later")
+
+	case StateStopped:
+		// Start fresh
+		stream.state = StateStarting
+		log.Printf("🆕 [%s] Starting fresh stream", deviceID)
+
+		// Create device-scoped context
+		stream.devCtx, stream.devCancel = context.WithCancel(context.Background())
+
+		// Create scrcpy client
+		adbClient := s.deviceManager.GetADBClient()
+		stream.scrcpyClient = NewScrcpyClient(adbClient, stream.deviceADBID)
+
+		// Start streaming goroutine
+		go s.runStream(stream)
 		return nil
 	}
 
-	stream.isStreaming = false
-
-	// Cancel context to signal goroutine to stop
-	if stream.cancel != nil {
-		stream.cancel()
-	}
-
-	// Close stopChan to signal stop (check if already closed)
-	select {
-	case <-stream.stopChan:
-		// Channel already closed
-	default:
-		close(stream.stopChan)
-	}
-
-	// Stop scrcpy client (handles process kill, socket close, forward removal)
-	if stream.scrcpyClient != nil {
-		stream.scrcpyClient.Stop()
-	}
-
-	delete(s.streams, deviceID)
-
-	log.Printf("✅ Stopped streaming for device %s", deviceID)
 	return nil
 }
 
-// cleanupStream is internal cleanup called from goroutine defer
-func (s *StreamingService) cleanupStream(deviceID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	stream, exists := s.streams[deviceID]
-	if !exists {
-		return // Already cleaned up
-	}
-
-	// Stop scrcpy client
-	if stream.scrcpyClient != nil {
-		stream.scrcpyClient.Stop()
-	}
-
-	delete(s.streams, deviceID)
-}
-
-// streamWithScrcpy manages the scrcpy streaming for a device
-func (s *StreamingService) streamWithScrcpy(stream *deviceStream) {
+// runStream manages the scrcpy streaming lifecycle for a device
+func (s *StreamingService) runStream(stream *deviceStream) {
 	defer func() {
-		log.Printf("🛑 Scrcpy stream ended for %s", stream.deviceID)
-		s.cleanupStream(stream.deviceID)
+		stream.mu.Lock()
+		log.Printf("🛑 [%s] Stream goroutine ending (state=%s)", stream.deviceID, stream.state)
+		stream.state = StateStopped
+		if stream.scrcpyClient != nil {
+			stream.scrcpyClient.Stop()
+			stream.scrcpyClient = nil
+		}
+		stream.devCancel = nil
+		stream.devCtx = nil
+		stream.mu.Unlock()
 	}()
 
 	// Start scrcpy and get the connection
-	conn, err := stream.scrcpyClient.Start()
+	stream.mu.Lock()
+	if stream.state != StateStarting {
+		log.Printf("⚠️ [%s] State changed during startup, aborting", stream.deviceID)
+		stream.mu.Unlock()
+		return
+	}
+	scrcpyClient := stream.scrcpyClient
+	stream.mu.Unlock()
+
+	conn, err := scrcpyClient.Start()
 	if err != nil {
-		log.Printf("❌ Failed to start scrcpy for %s: %v", stream.deviceID, err)
+		log.Printf("❌ [%s] Failed to start scrcpy: %v", stream.deviceID, err)
 		return
 	}
 
-	// TCP optimizations for real-time streaming
+	// Transition to RUNNING
+	stream.mu.Lock()
+	if stream.state != StateStarting {
+		log.Printf("⚠️ [%s] State changed during scrcpy connect, aborting", stream.deviceID)
+		stream.mu.Unlock()
+		return
+	}
+	stream.state = StateRunning
+	ctx := stream.devCtx
+	log.Printf("✅ [%s] Stream now RUNNING", stream.deviceID)
+	stream.mu.Unlock()
+
+	// TCP optimizations
 	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)        // Disable Nagle algorithm
-		tc.SetReadBuffer(1 << 20)  // 1MB read buffer
-		tc.SetWriteBuffer(1 << 20) // 1MB write buffer
-		log.Printf("⚡ [%s] TCP optimizations applied (NoDelay, 1MB buffers)", stream.deviceID)
+		tc.SetNoDelay(true)
+		tc.SetReadBuffer(1 << 20)
+		tc.SetWriteBuffer(1 << 20)
 	}
 
-	log.Printf("🎬 Started H.264 stream from scrcpy: %s", stream.deviceID)
+	log.Printf("🎬 [%s] Started H.264 stream from scrcpy", stream.deviceID)
 
 	// Consume H.264 stream (blocks until stream ends or context cancelled)
-	s.consumeH264(stream.ctx, stream.deviceID, conn)
+	s.consumeH264(ctx, stream.deviceID, conn)
 }
 
-// consumeH264 reads raw H.264 stream and broadcasts NAL units
-func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r io.Reader) {
-	log.Printf("🎬 Consuming H.264 stream: %s", deviceID)
+// StopStreaming stops streaming for a specific device (force stop)
+func (s *StreamingService) StopStreaming(deviceID string) error {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
 
-	// Buffer chứa dữ liệu tích lũy
-	accBuf := make([]byte, 0, 1024*1024)
-
-	// Buffer tạm để đọc từ stream (64KB for high throughput)
-	readBuf := make([]byte, 65536)
-
-	frameCount := 0
-
-	for {
-		// Check if context is cancelled
-		select {
-		case <-ctx.Done():
-			log.Printf("⏹️ Stream context cancelled for %s", deviceID)
-			return
-		default:
-		}
-
-		// Set read deadline to allow checking context periodically
-		if conn, ok := r.(net.Conn); ok {
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		}
-
-		// 1. Đọc dữ liệu mới từ stream
-		n, err := r.Read(readBuf)
-		if n > 0 {
-			// Log khi nhận data đầu tiên
-			if len(accBuf) == 0 && frameCount == 0 {
-				log.Printf("📥 [%s] First data chunk received: %d bytes", deviceID, n)
-			}
-			accBuf = append(accBuf, readBuf[:n]...)
-		}
-
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Timeout is expected, continue to check context
-				continue
-			}
-			if err != io.EOF {
-				log.Printf("Error reading H.264 stream for %s: %v", deviceID, err)
-			}
-			return
-		}
-
-		// 2. Xử lý cắt NAL Unit từ accBuf
-		for {
-			// Tìm Start Code đầu tiên
-			startIdx := findStartCodeIndex(accBuf)
-			if startIdx == -1 {
-				// Không có start code -> Chờ đọc thêm
-				if len(accBuf) > 100000 {
-					accBuf = accBuf[:0]
-				}
-				break
-			}
-
-			// Nếu start code không nằm ở đầu, vứt bỏ phần rác
-			if startIdx > 0 {
-				accBuf = accBuf[startIdx:]
-				startIdx = 0
-			}
-
-			// Tìm Start Code THỨ HAI
-			nextStartIdx := -1
-			if len(accBuf) > 4 {
-				idx := findStartCodeIndex(accBuf[3:])
-				if idx != -1 {
-					nextStartIdx = idx + 3
-				}
-			}
-
-			if nextStartIdx != -1 {
-				// ✅ Tìm thấy 1 NAL trọn vẹn
-				nalData := make([]byte, nextStartIdx)
-				copy(nalData, accBuf[:nextStartIdx])
-
-				// Gửi NAL này đi
-				s.broadcastNAL(deviceID, nalData, &frameCount)
-
-				// ✂️ Cắt buffer
-				leftover := accBuf[nextStartIdx:]
-				newBuf := make([]byte, len(leftover), cap(accBuf))
-				copy(newBuf, leftover)
-				accBuf = newBuf
-
-				continue
-			} else {
-				// Chưa đủ data -> Break để đọc thêm
-				break
-			}
-		}
-	}
-}
-
-// broadcastNAL sends a single NAL unit to WebSocket
-// Protocol: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
-func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCount *int) {
-	if len(nalData) == 0 {
-		return
+	if !exists {
+		log.Printf("⚠️ [%s] StopStreaming called but stream not found", deviceID)
+		return nil
 	}
 
-	*frameCount++
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
 
-	// Log periodic để theo dõi device nào đang stream
-	if *frameCount == 1 {
-		log.Printf("📹 [%s] First NAL received (%d bytes)", deviceID, len(nalData))
-	} else if *frameCount%200 == 0 {
-		log.Printf("📹 [%s] Streaming: %d NALs sent", deviceID, *frameCount)
+	log.Printf("� [%s] StopStreaming called (state=%s)", deviceID, stream.state)
+
+	if stream.state == StateStopped || stream.state == StateStopping {
+		return nil
 	}
 
-	// Gắn Device ID vào đầu packet để Frontend có thể filter
-	// Protocol mới: [1 byte ID_LENGTH] + [ID_BYTES] + [NAL_DATA]
-	idLen := len(deviceID)
-	if idLen > 255 {
-		log.Printf("Warning: Device ID too long: %s", deviceID)
-		return
+	stream.state = StateStopping
+
+	// Cancel idle timer
+	if stream.idleTimer != nil {
+		stream.idleTimer.Stop()
+		stream.idleTimer = nil
 	}
 
-	pkt := make([]byte, 1+idLen+len(nalData))
-	pkt[0] = byte(idLen)
-	copy(pkt[1:], []byte(deviceID))
-	copy(pkt[1+idLen:], nalData)
-
-	// Broadcast
-	s.wsHub.BroadcastToDevice(deviceID, pkt)
-
-	// Find start code and extract NAL type properly
-	nalType := -1
-	if len(nalData) >= 4 && nalData[0] == 0 && nalData[1] == 0 {
-		if nalData[2] == 1 {
-			// Start code: 00 00 01 (3 bytes)
-			nalType = int(nalData[3] & 0x1F)
-		} else if nalData[2] == 0 && nalData[3] == 1 {
-			// Start code: 00 00 00 01 (4 bytes)
-			if len(nalData) > 4 {
-				nalType = int(nalData[4] & 0x1F)
-			}
-		}
-	}
-
-	// Cache SPS/PPS/IDR for warm session support
-	if nalType == 5 || nalType == 7 || nalType == 8 {
-		s.mu.RLock()
-		stream, exists := s.streams[deviceID]
-		s.mu.RUnlock()
-
-		if exists {
-			stream.mu.Lock()
-			if nalType == 7 {
-				stream.spsPkt = make([]byte, len(pkt))
-				copy(stream.spsPkt, pkt)
-			} else if nalType == 8 {
-				stream.ppsPkt = make([]byte, len(pkt))
-				copy(stream.ppsPkt, pkt)
-			} else if nalType == 5 {
-				// Cache last IDR for instant decoder lock on re-attach
-				stream.lastIDRPkt = make([]byte, len(pkt))
-				copy(stream.lastIDRPkt, pkt)
-			}
-			stream.mu.Unlock()
-		}
-	}
-}
-
-// findStartCodeIndex tìm vị trí xuất hiện đầu tiên của 00 00 01 hoặc 00 00 00 01
-func findStartCodeIndex(data []byte) int {
-	n := len(data)
-	for i := 0; i < n-2; i++ {
-		// Check 00 00 01
-		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
-			// Kiểm tra xem trước đó có 00 nữa không (thành 00 00 00 01)
-			if i > 0 && data[i-1] == 0 {
-				return i - 1 // Start code 4 bytes
-			}
-			return i // Start code 3 bytes
-		}
-	}
-	return -1
-}
-
-// StartAllStreaming starts streaming for all online devices
-func (s *StreamingService) StartAllStreaming() error {
-	devices := s.deviceManager.GetAllDevices()
-
-	for _, device := range devices {
-		if device.Status == "online" {
-			if err := s.StartStreaming(device.ID); err != nil {
-				log.Printf("Failed to start streaming for %s: %v", device.ID, err)
-			}
-		}
+	// Cancel device context
+	if stream.devCancel != nil {
+		stream.devCancel()
 	}
 
 	return nil
 }
 
-// StopAllStreaming stops all active streams
-func (s *StreamingService) StopAllStreaming() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for deviceID := range s.streams {
-		stream := s.streams[deviceID]
-		stream.isStreaming = false
-
-		// Cancel context
-		if stream.cancel != nil {
-			stream.cancel()
-		}
-
-		// Stop scrcpy client
-		if stream.scrcpyClient != nil {
-			stream.scrcpyClient.Stop()
-		}
-
-		// Close stopChan
-		select {
-		case <-stream.stopChan:
-		default:
-			close(stream.stopChan)
-		}
-	}
-
-	s.streams = make(map[string]*deviceStream)
-	log.Println("Stopped all streams")
-}
-
-// GetStreamingStatus returns the status of all streams
-func (s *StreamingService) GetStreamingStatus() map[string]bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	status := make(map[string]bool)
-	for deviceID, stream := range s.streams {
-		status[deviceID] = stream.isStreaming
-	}
-
-	return status
-}
-
-// IsStreaming checks if a device is currently streaming
-func (s *StreamingService) IsStreaming(deviceID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stream, exists := s.streams[deviceID]
-	return exists && stream.isStreaming
-}
-
-// GetStreamHeaders returns cached SPS/PPS packets for a device
-// Returns nil slices if device not found or headers not available
-func (s *StreamingService) GetStreamHeaders(deviceID string) ([]byte, []byte) {
-	s.mu.RLock()
-	stream, exists := s.streams[deviceID]
-	s.mu.RUnlock()
-
-	if !exists {
-		return nil, nil
-	}
-
-	stream.mu.RLock()
-	defer stream.mu.RUnlock()
-
-	// Trả về bản copy để an toàn
-	var sps, pps []byte
-	if stream.spsPkt != nil {
-		sps = make([]byte, len(stream.spsPkt))
-		copy(sps, stream.spsPkt)
-	}
-	if stream.ppsPkt != nil {
-		pps = make([]byte, len(stream.ppsPkt))
-		copy(pps, stream.ppsPkt)
-	}
-
-	return sps, pps
-}
-
-// GetStreamData returns cached SPS/PPS/IDR packets for instant decoder lock
-// Used when client re-attaches to warm stream
-func (s *StreamingService) GetStreamData(deviceID string) (sps, pps, idr []byte) {
-	s.mu.RLock()
-	stream, exists := s.streams[deviceID]
-	s.mu.RUnlock()
-
-	if !exists {
-		return nil, nil, nil
-	}
-
-	stream.mu.RLock()
-	defer stream.mu.RUnlock()
-
-	// Return copies for safety
-	if stream.spsPkt != nil {
-		sps = make([]byte, len(stream.spsPkt))
-		copy(sps, stream.spsPkt)
-	}
-	if stream.ppsPkt != nil {
-		pps = make([]byte, len(stream.ppsPkt))
-		copy(pps, stream.ppsPkt)
-	}
-	if stream.lastIDRPkt != nil {
-		idr = make([]byte, len(stream.lastIDRPkt))
-		copy(idr, stream.lastIDRPkt)
-	}
-
-	return sps, pps, idr
-}
-
-// AddViewer increments viewer count and cancels idle timer
+// AddViewer increments the viewer count for a device
 func (s *StreamingService) AddViewer(deviceID string) {
 	s.mu.RLock()
 	stream, exists := s.streams[deviceID]
@@ -518,17 +260,23 @@ func (s *StreamingService) AddViewer(deviceID string) {
 	defer stream.mu.Unlock()
 
 	stream.viewers++
-	log.Printf("👁️ [%s] Viewer added (total: %d)", deviceID, stream.viewers)
+	log.Printf("�️ [%s] Viewer added (total: %d, state: %s)", deviceID, stream.viewers, stream.state)
 
-	// Cancel idle timer if running
+	// Cancel idle timer if exists
 	if stream.idleTimer != nil {
 		stream.idleTimer.Stop()
 		stream.idleTimer = nil
-		log.Printf("⚡ [%s] Idle timer cancelled - stream stays warm", deviceID)
+		log.Printf("⏱️ [%s] Idle timer cancelled by new viewer", deviceID)
+	}
+
+	// Resume from idle if needed
+	if stream.state == StateIdle {
+		stream.state = StateRunning
+		log.Printf("▶️ [%s] Resumed from IDLE to RUNNING", deviceID)
 	}
 }
 
-// RemoveViewer decrements viewer count and starts idle timer if no viewers
+// RemoveViewer decrements the viewer count and starts idle timer if no viewers
 func (s *StreamingService) RemoveViewer(deviceID string) {
 	s.mu.RLock()
 	stream, exists := s.streams[deviceID]
@@ -544,19 +292,75 @@ func (s *StreamingService) RemoveViewer(deviceID string) {
 	if stream.viewers > 0 {
 		stream.viewers--
 	}
-	log.Printf("👁️ [%s] Viewer removed (remaining: %d)", deviceID, stream.viewers)
+	log.Printf("👁️ [%s] Viewer removed (remaining: %d, state: %s)", deviceID, stream.viewers, stream.state)
 
-	// Start idle timer if no viewers left
-	if stream.viewers == 0 && stream.idleTimer == nil {
-		log.Printf("⏱️ [%s] No viewers, starting %v idle timer", deviceID, warmSessionTTL)
+	// Start idle timer if no viewers and currently running
+	if stream.viewers == 0 && stream.state == StateRunning {
+		stream.state = StateIdle
+		log.Printf("⏸️ [%s] Entering IDLE state, starting %.0fs timer", deviceID, warmSessionTTL.Seconds())
+
 		stream.idleTimer = time.AfterFunc(warmSessionTTL, func() {
-			log.Printf("💤 [%s] Idle timeout reached, stopping warm stream", deviceID)
-			s.StopStreaming(deviceID)
+			s.handleIdleTimeout(deviceID)
 		})
 	}
 }
 
-// GetViewerCount returns the number of active viewers for a device
+// handleIdleTimeout is called when idle timer expires
+func (s *StreamingService) handleIdleTimeout(deviceID string) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	// Only kill if still idle with no viewers
+	if stream.viewers == 0 && stream.state == StateIdle {
+		log.Printf("💤 [%s] Idle timeout reached, stopping warm stream", deviceID)
+		stream.state = StateStopping
+
+		// Cancel device context to stop goroutine
+		if stream.devCancel != nil {
+			stream.devCancel()
+		}
+	} else {
+		log.Printf("⏱️ [%s] Idle timeout ignored (viewers=%d, state=%s)", deviceID, stream.viewers, stream.state)
+	}
+}
+
+// GetStreamData returns cached SPS, PPS, and last IDR for instant decode
+func (s *StreamingService) GetStreamData(deviceID string) (sps, pps, idr []byte) {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, nil, nil
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	if stream.spsPkt != nil {
+		sps = make([]byte, len(stream.spsPkt))
+		copy(sps, stream.spsPkt)
+	}
+	if stream.ppsPkt != nil {
+		pps = make([]byte, len(stream.ppsPkt))
+		copy(pps, stream.ppsPkt)
+	}
+	if stream.lastIDRPkt != nil {
+		idr = make([]byte, len(stream.lastIDRPkt))
+		copy(idr, stream.lastIDRPkt)
+	}
+	return sps, pps, idr
+}
+
+// GetViewerCount returns the current viewer count for a device
 func (s *StreamingService) GetViewerCount(deviceID string) int {
 	s.mu.RLock()
 	stream, exists := s.streams[deviceID]
@@ -566,7 +370,278 @@ func (s *StreamingService) GetViewerCount(deviceID string) int {
 		return 0
 	}
 
-	stream.mu.RLock()
-	defer stream.mu.RUnlock()
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
 	return stream.viewers
+}
+
+// IsStreaming checks if a device is currently streaming
+func (s *StreamingService) IsStreaming(deviceID string) bool {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return false
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return stream.state == StateRunning || stream.state == StateIdle || stream.state == StateStarting
+}
+
+// consumeH264 reads raw H.264 stream and broadcasts NAL units
+func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r io.Reader) {
+	log.Printf("🎬 Consuming H.264 stream: %s", deviceID)
+
+	accBuf := make([]byte, 0, 1024*1024)
+	readBuf := make([]byte, 65536)
+	frameCount := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("⏹️ [%s] Stream context cancelled", deviceID)
+			return
+		default:
+		}
+
+		if conn, ok := r.(net.Conn); ok {
+			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		}
+
+		n, err := r.Read(readBuf)
+		if n > 0 {
+			if len(accBuf) == 0 && frameCount == 0 {
+				log.Printf("� [%s] First data chunk received: %d bytes", deviceID, n)
+			}
+			accBuf = append(accBuf, readBuf[:n]...)
+		}
+
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			if err != io.EOF {
+				log.Printf("Error reading H.264 stream for %s: %v", deviceID, err)
+			}
+			return
+		}
+
+		// Extract and broadcast NAL units
+		for {
+			nalData, remaining := extractNAL(accBuf)
+			if nalData == nil {
+				break
+			}
+			accBuf = remaining
+			s.broadcastNAL(deviceID, nalData, &frameCount)
+		}
+	}
+}
+
+// extractNAL extracts a single NAL unit from buffer
+func extractNAL(buf []byte) (nalData []byte, remaining []byte) {
+	if len(buf) < 4 {
+		return nil, buf
+	}
+
+	startIdx := findStartCodeIndex(buf)
+	if startIdx < 0 {
+		return nil, buf
+	}
+
+	searchStart := startIdx + 3
+	if len(buf) > startIdx+3 && buf[startIdx+2] == 0 {
+		searchStart = startIdx + 4
+	}
+
+	nextIdx := -1
+	for i := searchStart; i < len(buf)-2; i++ {
+		if buf[i] == 0 && buf[i+1] == 0 && (buf[i+2] == 1 || (buf[i+2] == 0 && i+3 < len(buf) && buf[i+3] == 1)) {
+			nextIdx = i
+			break
+		}
+	}
+
+	if nextIdx > 0 {
+		return buf[startIdx:nextIdx], buf[nextIdx:]
+	}
+
+	if len(buf) > 1024*100 {
+		return buf[startIdx:], nil
+	}
+
+	return nil, buf
+}
+
+// findStartCodeIndex finds the position of 00 00 01 or 00 00 00 01
+func findStartCodeIndex(data []byte) int {
+	n := len(data)
+	for i := 0; i < n-2; i++ {
+		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			if i > 0 && data[i-1] == 0 {
+				return i - 1
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+// broadcastNAL sends a single NAL unit to WebSocket
+func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCount *int) {
+	if len(nalData) == 0 {
+		return
+	}
+
+	*frameCount++
+
+	if *frameCount == 1 {
+		log.Printf("� [%s] First NAL received (%d bytes)", deviceID, len(nalData))
+	} else if *frameCount%200 == 0 {
+		log.Printf("📹 [%s] Streaming: %d NALs sent", deviceID, *frameCount)
+	}
+
+	idLen := len(deviceID)
+	if idLen > 255 {
+		return
+	}
+
+	pkt := make([]byte, 1+idLen+len(nalData))
+	pkt[0] = byte(idLen)
+	copy(pkt[1:], []byte(deviceID))
+	copy(pkt[1+idLen:], nalData)
+
+	s.wsHub.BroadcastToDevice(deviceID, pkt)
+
+	// Extract NAL type
+	nalType := -1
+	if len(nalData) >= 4 && nalData[0] == 0 && nalData[1] == 0 {
+		if nalData[2] == 1 {
+			nalType = int(nalData[3] & 0x1F)
+		} else if nalData[2] == 0 && nalData[3] == 1 && len(nalData) > 4 {
+			nalType = int(nalData[4] & 0x1F)
+		}
+	}
+
+	// Cache SPS/PPS/IDR
+	if nalType == 5 || nalType == 7 || nalType == 8 {
+		s.mu.RLock()
+		stream, exists := s.streams[deviceID]
+		s.mu.RUnlock()
+
+		if exists {
+			stream.mu.Lock()
+			if nalType == 7 {
+				stream.spsPkt = make([]byte, len(pkt))
+				copy(stream.spsPkt, pkt)
+			} else if nalType == 8 {
+				stream.ppsPkt = make([]byte, len(pkt))
+				copy(stream.ppsPkt, pkt)
+			} else if nalType == 5 {
+				stream.lastIDRPkt = make([]byte, len(pkt))
+				copy(stream.lastIDRPkt, pkt)
+			}
+			stream.mu.Unlock()
+		}
+	}
+}
+
+// Control socket methods
+
+// SendKeyEvent sends a key press/release to a device
+func (s *StreamingService) SendKeyEvent(deviceID string, action, keycode, metastate int) error {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists || stream.scrcpyClient == nil {
+		return fmt.Errorf("stream not found for device: %s", deviceID)
+	}
+
+	return stream.scrcpyClient.SendKeyEvent(action, keycode, metastate)
+}
+
+// SendText injects text directly to a device
+func (s *StreamingService) SendText(deviceID string, text string) error {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists || stream.scrcpyClient == nil {
+		return fmt.Errorf("stream not found for device: %s", deviceID)
+	}
+
+	return stream.scrcpyClient.SendText(text)
+}
+
+// SendClipboard sets Android clipboard and optionally pastes
+func (s *StreamingService) SendClipboard(deviceID string, text string, paste bool) error {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists || stream.scrcpyClient == nil {
+		return fmt.Errorf("stream not found for device: %s", deviceID)
+	}
+
+	return stream.scrcpyClient.SendClipboard(text, paste)
+}
+
+// HasControl checks if a device has control socket available
+func (s *StreamingService) HasControl(deviceID string) bool {
+	s.mu.RLock()
+	stream, exists := s.streams[deviceID]
+	s.mu.RUnlock()
+
+	if !exists || stream.scrcpyClient == nil {
+		return false
+	}
+
+	return stream.scrcpyClient.HasControl()
+}
+
+// StartAllStreaming starts streaming for all online devices
+func (s *StreamingService) StartAllStreaming() error {
+	devices := s.deviceManager.GetAllDevices()
+	for _, device := range devices {
+		if device.Status == "online" {
+			if err := s.StartStreaming(device.ID); err != nil {
+				log.Printf("⚠️ Failed to start streaming for %s: %v", device.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// StopAllStreaming stops all active streams
+func (s *StreamingService) StopAllStreaming() {
+	s.mu.RLock()
+	deviceIDs := make([]string, 0, len(s.streams))
+	for id := range s.streams {
+		deviceIDs = append(deviceIDs, id)
+	}
+	s.mu.RUnlock()
+
+	for _, id := range deviceIDs {
+		s.StopStreaming(id)
+	}
+}
+
+// GetStreamingStatus returns the status of all streams
+func (s *StreamingService) GetStreamingStatus() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	status := make(map[string]interface{})
+	for id, stream := range s.streams {
+		stream.mu.Lock()
+		status[id] = map[string]interface{}{
+			"state":   stream.state.String(),
+			"viewers": stream.viewers,
+		}
+		stream.mu.Unlock()
+	}
+	return status
 }

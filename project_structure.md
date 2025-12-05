@@ -31,6 +31,12 @@ Multi-device Android control system with Go backend (ADB/H.264) and React/Electr
     - Must be < `0x80000000` (Java's `Integer.parseInt(hex, 16)` limit)
     - Socket name: `scrcpy_{scid_hex}`
     - `raw_stream=true`: Pure H.264 Annex-B, no handshake headers
+    - `control=true`: Enables second socket for keyboard/clipboard
+  - **Control Socket:** SendKeyEvent, SendText, SendClipboard methods
+
+- `control.go`:
+  - Binary serialization for scrcpy control messages
+  - Key injection, text injection, clipboard operations
   
 - `device_manager.go`: Scans and manages device list/status
 - `action_dispatcher.go`: Handles input events (Touch, Key, Text) via ADB

@@ -13,14 +13,15 @@ import (
 )
 
 // ScrcpyClient manages a scrcpy server connection for a single device
-// Updated for scrcpy 3.x protocol
+// Updated for scrcpy 3.x protocol with control socket support
 type ScrcpyClient struct {
 	adbClient   *adb.ADBClient
 	deviceADBID string
 	localPort   int
 	scid        uint32 // Session Connection ID (32-bit HEX) for scrcpy 3.x
 	serverCmd   *exec.Cmd
-	conn        net.Conn
+	conn        net.Conn // Video stream connection
+	ctrlConn    net.Conn // Control socket connection
 	deviceName  string
 	width       int
 	height      int
@@ -94,7 +95,7 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		"video_bit_rate=1000000", // 8Mbps for real-time mode
 		"max_fps=30",             // 60fps for smooth interaction
 		"tunnel_forward=true",
-		"control=false",
+		"control=true",    // Enable control socket for keyboard/clipboard
 		"raw_stream=true", // Pure H.264 Annex-B, no headers/meta
 	}
 
@@ -109,14 +110,25 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	// Step 4: Wait for server to initialize (need enough time for app_process to start)
 	time.Sleep(1500 * time.Millisecond)
 
-	// Step 5: Connect to the server with retry
-	log.Printf("🔗 [%s] Connecting to scrcpy server...", c.deviceADBID)
+	// Step 5: Connect to the server with retry (VIDEO socket)
+	log.Printf("🔗 [%s] Connecting to scrcpy video socket...", c.deviceADBID)
 	conn, err := c.connectWithRetry(10, 300*time.Millisecond)
 	if err != nil {
 		c.cleanup()
 		return nil, fmt.Errorf("failed to connect to scrcpy server: %w", err)
 	}
 	c.conn = conn
+
+	// Step 5b: Connect control socket (second connection to same socket)
+	log.Printf("🎮 [%s] Connecting to scrcpy control socket...", c.deviceADBID)
+	ctrlConn, err := c.connectWithRetry(5, 200*time.Millisecond)
+	if err != nil {
+		log.Printf("⚠️ [%s] Control socket failed, keyboard disabled: %v", c.deviceADBID, err)
+		// Continue without control - video still works
+	} else {
+		c.ctrlConn = ctrlConn
+		log.Printf("✅ [%s] Control socket connected", c.deviceADBID)
+	}
 
 	// Step 6: Perform handshake
 	log.Printf("🤝 [%s] Performing handshake...", c.deviceADBID)
@@ -127,7 +139,7 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	}
 
 	c.running = true
-	log.Printf("🎬 [%s] Scrcpy stream ready - %s @ %dx%d", c.deviceADBID, c.deviceName, c.width, c.height)
+	log.Printf("🎬 [%s] Scrcpy stream ready - %s @ %dx%d (control: %v)", c.deviceADBID, c.deviceName, c.width, c.height, c.ctrlConn != nil)
 
 	return c.conn, nil
 }
@@ -143,10 +155,16 @@ func (c *ScrcpyClient) Stop() {
 
 // cleanup releases all resources (must be called while holding mutex)
 func (c *ScrcpyClient) cleanup() {
-	// Close TCP connection
+	// Close video TCP connection
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
+	}
+
+	// Close control socket
+	if c.ctrlConn != nil {
+		c.ctrlConn.Close()
+		c.ctrlConn = nil
 	}
 
 	// Kill server process
@@ -222,4 +240,42 @@ func findFreePort() int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+// SendControl sends raw bytes to the control socket
+func (c *ScrcpyClient) SendControl(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.ctrlConn == nil {
+		return fmt.Errorf("control socket not connected")
+	}
+
+	_, err := c.ctrlConn.Write(data)
+	return err
+}
+
+// SendKeyEvent sends a key press/release event
+func (c *ScrcpyClient) SendKeyEvent(action, keycode, metastate int) error {
+	data := SerializeKeycode(action, keycode, 0, metastate)
+	return c.SendControl(data)
+}
+
+// SendText injects text directly (bypasses keyboard)
+func (c *ScrcpyClient) SendText(text string) error {
+	data := SerializeText(text)
+	return c.SendControl(data)
+}
+
+// SendClipboard sets Android clipboard and optionally pastes
+func (c *ScrcpyClient) SendClipboard(text string, paste bool) error {
+	data := SerializeClipboard(text, paste, 0)
+	return c.SendControl(data)
+}
+
+// HasControl returns whether control socket is available
+func (c *ScrcpyClient) HasControl() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ctrlConn != nil
 }

@@ -247,6 +247,47 @@ func (c *Client) readPump() {
 							c.ss.RemoveViewer(deviceID)
 						}
 					}
+
+				case "key":
+					// Keyboard key press/release
+					if c.ss != nil {
+						deviceID, _ := msg["device_id"].(string)
+						action := int(msg["action"].(float64)) // 0=down, 1=up
+						keycode := int(msg["keycode"].(float64))
+						meta := 0
+						if m, ok := msg["meta"].(float64); ok {
+							meta = int(m)
+						}
+						if err := c.ss.SendKeyEvent(deviceID, action, keycode, meta); err != nil {
+							log.Printf("⚠️ Key event failed: %v", err)
+						}
+					}
+
+				case "text":
+					// Direct text injection
+					if c.ss != nil {
+						deviceID, _ := msg["device_id"].(string)
+						text, _ := msg["text"].(string)
+						if err := c.ss.SendText(deviceID, text); err != nil {
+							log.Printf("⚠️ Text injection failed: %v", err)
+						}
+					}
+
+				case "clipboard":
+					// Clipboard set/paste
+					if c.ss != nil {
+						deviceID, _ := msg["device_id"].(string)
+						text, _ := msg["text"].(string)
+						paste := false
+						if p, ok := msg["paste"].(bool); ok {
+							paste = p
+						}
+						if err := c.ss.SendClipboard(deviceID, text, paste); err != nil {
+							log.Printf("⚠️ Clipboard operation failed: %v", err)
+						} else {
+							log.Printf("📋 Clipboard %s for %s (%d chars)", map[bool]string{true: "pasted", false: "set"}[paste], deviceID, len(text))
+						}
+					}
 				}
 			}
 		}
