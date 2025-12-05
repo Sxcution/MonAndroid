@@ -38,6 +38,7 @@ function App() {
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
     const [dragEnd, setDragEnd] = useState({ x: 0, y: 0 });
+    const [dragHighlightedDevices, setDragHighlightedDevices] = useState<string[]>([]);
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Load devices on mount
@@ -117,51 +118,61 @@ function App() {
 
     // Drag selection handlers
     const handleDragStart = (e: React.MouseEvent) => {
-        // Only start drag with left mouse button, not on sidebar or modals
+        // Only start drag with left mouse button, not on sidebar/modals, not with Ctrl (Ctrl+Click is for DeviceCard multi-select)
         if (e.button !== 0) return;
+        if (e.ctrlKey) return; // Ctrl+Click handled by DeviceCard
         if ((e.target as HTMLElement).closest('.sidebar, .modal')) return;
 
         setIsDragging(true);
         setDragStart({ x: e.clientX, y: e.clientY });
         setDragEnd({ x: e.clientX, y: e.clientY });
+        setDragHighlightedDevices([]);
     };
 
     const handleDragMove = (e: React.MouseEvent) => {
         if (!isDragging) return;
-        setDragEnd({ x: e.clientX, y: e.clientY });
+        const newEnd = { x: e.clientX, y: e.clientY };
+        setDragEnd(newEnd);
+
+        // Calculate highlighted devices in real-time
+        const minX = Math.min(dragStart.x, newEnd.x);
+        const maxX = Math.max(dragStart.x, newEnd.x);
+        const minY = Math.min(dragStart.y, newEnd.y);
+        const maxY = Math.max(dragStart.y, newEnd.y);
+
+        const highlighted: string[] = [];
+        const cards = document.querySelectorAll('[data-device-id]');
+        cards.forEach(card => {
+            const rect = card.getBoundingClientRect();
+            const intersects = !(rect.right < minX || rect.left > maxX || rect.bottom < minY || rect.top > maxY);
+            if (intersects) {
+                const deviceId = card.getAttribute('data-device-id');
+                if (deviceId) highlighted.push(deviceId);
+            }
+        });
+        setDragHighlightedDevices(highlighted);
     };
 
     const handleDragEnd = () => {
         if (!isDragging) return;
 
-        // Calculate selection box
-        const minX = Math.min(dragStart.x, dragEnd.x);
-        const maxX = Math.max(dragStart.x, dragEnd.x);
-        const minY = Math.min(dragStart.y, dragEnd.y);
-        const maxY = Math.max(dragStart.y, dragEnd.y);
-
         // If drag distance is too small, treat as click (clear selection)
         if (Math.abs(dragEnd.x - dragStart.x) < 10 && Math.abs(dragEnd.y - dragStart.y) < 10) {
             clearDeviceSelection();
             setIsDragging(false);
+            setDragHighlightedDevices([]);
             return;
         }
 
-        // Find all device cards that intersect with selection box
-        const cards = document.querySelectorAll('[data-device-id]');
-        cards.forEach(card => {
-            const rect = card.getBoundingClientRect();
-            const intersects = !(rect.right < minX || rect.left > maxX || rect.bottom < minY || rect.top > maxY);
-
-            if (intersects) {
-                const deviceId = card.getAttribute('data-device-id');
-                if (deviceId && !selectedDevices.includes(deviceId)) {
-                    toggleDeviceSelection(deviceId);
-                }
+        // Use already calculated highlighted devices from drag move
+        dragHighlightedDevices.forEach(deviceId => {
+            if (!selectedDevices.includes(deviceId)) {
+                toggleDeviceSelection(deviceId);
             }
         });
 
         setIsDragging(false);
+        setDragHighlightedDevices([]);
     };
 
     // Calculate selection box dimensions
@@ -271,7 +282,7 @@ function App() {
 
             {/* Main Content - Full Screen Grid */}
             <main className="w-full h-full">
-                <DeviceGrid />
+                <DeviceGrid dragHighlightedDevices={dragHighlightedDevices} />
             </main>
 
             {/* Expanded Device View */}

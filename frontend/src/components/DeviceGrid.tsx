@@ -3,7 +3,11 @@ import { useAppStore } from '@/store/useAppStore';
 import { DeviceCard } from './DeviceCard';
 import { Loader2 } from 'lucide-react';
 
-export const DeviceGrid: React.FC = () => {
+interface DeviceGridProps {
+    dragHighlightedDevices?: string[];
+}
+
+export const DeviceGrid: React.FC<DeviceGridProps> = ({ dragHighlightedDevices = [] }) => {
     const {
         selectedDevices,
         toggleDeviceSelection,
@@ -27,7 +31,6 @@ export const DeviceGrid: React.FC = () => {
 
     return (
         <div className="w-full h-full p-2 overflow-y-auto bg-gray-950 scrollbar-hide">
-            {/* Responsive grid - auto-fit columns based on screen size */}
             <div
                 className="grid gap-1"
                 style={{
@@ -40,6 +43,7 @@ export const DeviceGrid: React.FC = () => {
                         device={device}
                         slotIndex={slotIndex}
                         isSelected={device ? selectedDevices.includes(device.id) : false}
+                        isDragHighlighted={device ? dragHighlightedDevices.includes(device.id) : false}
                         onSelect={() => device && toggleDeviceSelection(device.id)}
                         onExpand={() => device && setExpandedDevice(device.id)}
                     />

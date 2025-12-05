@@ -290,8 +290,8 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (!interactive) return;
-        // Ctrl+Click is for selection, not touch
-        if (e.ctrlKey) return;
+        // Only left click (button 0), no Ctrl (selection), no right-click (back)
+        if (e.button !== 0 || e.ctrlKey) return;
         const coords = getCoords(e);
         if (coords) {
             dragStartRef.current = { x: coords.x, y: coords.y, t: Date.now() };

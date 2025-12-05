@@ -11,11 +11,12 @@ interface DeviceCardProps {
     device: Device | null;
     slotIndex: number;
     isSelected: boolean;
+    isDragHighlighted?: boolean;
     onSelect: () => void;
     onExpand: () => void;
 }
 
-export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, onSelect, onExpand }) => {
+export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, isDragHighlighted = false, onSelect, onExpand }) => {
     const { expandedDeviceId, expandButtonPosition, setExpandButtonPosition, selectedDevices } = useAppStore();
     const { showDeviceName } = useSettingsStore();
     const isExpanded = device ? expandedDeviceId === device.id : false;
@@ -89,7 +90,7 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
             className={cn(
                 'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
                 !device ? 'border-gray-800' :
-                    isSelected ? 'border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-700 hover:border-gray-500'
+                    (isSelected || isDragHighlighted) ? 'border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-700 hover:border-blue-400/60'
             )}
         >
             {/* ScreenView Full */}
@@ -109,13 +110,6 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                         <div className="text-sm text-gray-600">
                             {device ? 'Offline' : 'Chưa kết nối'}
                         </div>
-                    </div>
-                )}
-
-                {/* Selected indicator */}
-                {isSelected && (
-                    <div className="absolute top-1 left-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center z-10">
-                        <span className="text-white text-xs font-bold">✓</span>
                     </div>
                 )}
 
@@ -152,10 +146,10 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                         left: `${expandButtonPosition.x}px`,
                         position: 'absolute',
                     }}
-                    className="z-20 w-8 h-8 flex items-center justify-center bg-gray-800/80 hover:bg-blue-600 text-white rounded-full shadow-lg backdrop-blur-sm border border-white/10 transition-colors cursor-grab active:cursor-grabbing transform scale-90"
+                    className="z-20 w-5 h-5 flex items-center justify-center bg-gray-800/80 hover:bg-blue-600 text-white rounded-full shadow-lg backdrop-blur-sm border border-white/10 transition-colors cursor-grab active:cursor-grabbing"
                     title="Phóng to"
                 >
-                    <Search size={14} />
+                    <Search size={10} />
                 </button>
             )}
         </div>
