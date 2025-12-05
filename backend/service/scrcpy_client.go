@@ -47,15 +47,15 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		return c.conn, nil
 	}
 
-	// Step 1: Push scrcpy-server.jar to device
-	log.Printf("📦 [%s] Pushing scrcpy-server.jar...", c.deviceADBID)
-	jarPath := filepath.Join(".", "assets", "scrcpy-server-v1.24.jar")
+	// Step 1: Push scrcpy-server to device
+	log.Printf("📦 [%s] Pushing scrcpy-server...", c.deviceADBID)
+	jarPath := filepath.Join(".", "assets", "scrcpy-server")
 	remotePath := "/data/local/tmp/scrcpy-server.jar"
 
 	if err := c.adbClient.PushFile(c.deviceADBID, jarPath, remotePath); err != nil {
 		return nil, fmt.Errorf("failed to push scrcpy server: %w", err)
 	}
-	log.Printf("✅ [%s] Server jar pushed successfully", c.deviceADBID)
+	log.Printf("✅ [%s] Server pushed successfully", c.deviceADBID)
 
 	// Step 2: Find free port and setup ADB forward
 	c.localPort = findFreePort()
@@ -69,8 +69,7 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	}
 	log.Printf("✅ [%s] ADB forward established", c.deviceADBID)
 
-	// Step 3: Start scrcpy server with v1.24 key=value arguments
-	// Cấu hình balance: mượt hơn nhưng vẫn tương thích máy cũ
+	// Step 3: Start scrcpy server with SIMPLIFIED options (tương thích mọi device)
 	log.Printf("🚀 [%s] Starting scrcpy server (v1.24)...", c.deviceADBID)
 	serverArgs := []string{
 		"CLASSPATH=/data/local/tmp/scrcpy-server.jar",
@@ -78,21 +77,14 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		"/",
 		"com.genymobile.scrcpy.Server",
 		"1.24",
-		"log_level=info",
-		"max_size=800",
-		"bit_rate=2000000", // 2Mbps - balance quality/performance
-		"max_fps=30",       // 24fps - mượt hơn 15fps, vẫn an toàn
-		"lock_video_orientation=-1",
+		"log_level=debug",
+		"max_size=720",
+		"bit_rate=2000000",
+		"max_fps=30",
 		"tunnel_forward=true",
 		"control=false",
-		"display_id=0",
-		"show_touches=false",
-		"stay_awake=false",
-		"power_off_on_close=false",
 		"send_frame_meta=false",
 		"send_device_meta=true",
-		"send_dummy_byte=true",
-		"raw_stream=false",
 	}
 
 	cmd, err := c.adbClient.ExecuteCommandBackground(c.deviceADBID, serverArgs)
