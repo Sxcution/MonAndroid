@@ -92,7 +92,7 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 		"video=true",
 		"audio=false",
 		"max_size=720",
-		"video_bit_rate=8000000", // 8Mbps for real-time mode
+		"video_bit_rate=1500000", // 1.5Mbps for real-time mode
 		"max_fps=30",             // 60fps for smooth interaction
 		"tunnel_forward=true",
 		"control=true",    // Enable control socket for keyboard/clipboard
