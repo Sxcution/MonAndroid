@@ -6,7 +6,7 @@
             "Go",
             "React",
             "TypeScript",
-            "Electron"
+            "Vite"
         ]
     },
     "backend_identifiers": {
@@ -25,8 +25,7 @@
             "device": "Device",
             "device_group": "DeviceGroup",
             "action": "Action",
-            "action_request": "ActionRequest",
-            "macro": "Macro"
+            "action_request": "ActionRequest"
         },
         "services": {
             "device_manager": "DeviceManager",
@@ -37,9 +36,35 @@
         "scrcpy_protocol": {
             "version": "3.3.3",
             "scid_format": "31-bit HEX (0x00000000-0x7FFFFFFF)",
-            "scid_comment": "Server uses Java Integer.parseInt(hex, 16), must stay under 0x80000000",
             "stream_mode": "raw_stream=true (pure H.264 Annex-B)",
             "socket_name_format": "scrcpy_{scid_hex_8chars}"
+        },
+        "quality_profiles": {
+            "usb_default": {
+                "bitrate": "1500000",
+                "max_size": "720",
+                "fps": "30"
+            },
+            "wifi_default": {
+                "bitrate": "800000",
+                "max_size": "480",
+                "fps": "30"
+            },
+            "fallback": {
+                "bitrate": "500000",
+                "max_size": "360",
+                "fps": "24"
+            },
+            "last_resort": {
+                "bitrate": "300000",
+                "max_size": "240",
+                "fps": "15"
+            }
+        },
+        "auto_reconnect": {
+            "max_attempts": 3,
+            "backoff_pattern": "exponential (2s, 4s, 8s)",
+            "short_stream_threshold": "5 seconds"
         }
     },
     "frontend_identifiers": {
@@ -48,10 +73,13 @@
         "components": {
             "device_card": "DeviceCard",
             "device_grid": "DeviceGrid",
+            "device_context_menu": "DeviceContextMenu",
             "screen_view": "ScreenView",
             "control_panel": "ControlPanel",
             "action_bar": "ActionBar",
             "settings_modal": "SettingsModal",
+            "expanded_device_view": "ExpandedDeviceView",
+            "edit_tag_modal": "EditTagModal",
             "app": "App"
         },
         "services": {
@@ -64,24 +92,21 @@
             "settings_store": "useSettingsStore"
         },
         "state_variables": {
+            "device_slot_registry": "deviceSlotRegistry",
             "expand_button_position": "expandButtonPosition",
-            "set_expand_button_position": "setExpandButtonPosition",
             "show_device_name": "showDeviceName",
             "show_fps_indicator": "showFpsIndicator",
-            "target_fps": "targetFps",
             "is_dragging": "isDragging",
-            "drag_start": "dragStart",
-            "drag_end": "dragEnd",
             "drag_highlighted_devices": "dragHighlightedDevices",
             "is_drag_highlighted": "isDragHighlighted",
-            "decode_ms": "decodeMs",
-            "queue_len": "queueLen"
+            "available_tags": "availableTags",
+            "filter_tag": "filterTag",
+            "filter_untagged": "filterUntagged"
         },
         "types": {
             "device": "Device",
             "action": "Action",
-            "api_response": "APIResponse",
-            "websocket_message": "WebSocketMessage"
+            "api_response": "APIResponse"
         }
     },
     "action_types": {
@@ -89,9 +114,7 @@
         "swipe": "swipe",
         "input": "input",
         "key": "key",
-        "open_app": "open_app",
-        "install_apk": "install_apk",
-        "push_file": "push_file"
+        "open_app": "open_app"
     },
     "key_codes": {
         "back": 4,
@@ -102,21 +125,20 @@
         "volume_down": 25,
         "enter": 66
     },
-    "ui_text": {
-        "app_title": "Android Control",
-        "app_subtitle": "Multi-Device Control System",
-        "btn_scan_devices": "Scan Devices",
-        "btn_clear_selection": "Clear Selection",
-        "btn_batch_input": "Batch Input",
-        "status_connected": "Connected",
-        "status_disconnected": "Disconnected",
-        "msg_no_devices": "No devices found",
-        "msg_connect_devices": "Connect your Android devices via USB and click 'Scan Devices'"
+    "ui_interactions": {
+        "card_selection": {
+            "ctrl_click": "Toggle selection (multi-select)",
+            "right_click": "Android Back button",
+            "alt_right_click": "Open context menu"
+        },
+        "sidebar_slots": {
+            "left_click": "Toggle device selection",
+            "right_click": "Open context menu"
+        }
     },
     "naming_conventions": {
         "go": "CamelCase for exported, camelCase for unexported",
         "typescript": "camelCase for variables/functions, PascalCase for components/types",
-        "css": "kebab-case for classes",
-        "files": "kebab-case for React components, snake_case for utilities"
+        "css": "kebab-case for classes"
     }
 }

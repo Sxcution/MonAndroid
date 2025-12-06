@@ -172,9 +172,11 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                 onClick={handleClickWrapper}
                 style={{ touchAction: 'manipulation', userSelect: 'none' }}
                 className={cn(
-                    'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
-                    !device ? 'border-gray-800' :
-                        (isSelected || isDragHighlighted) ? 'border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-700 hover:border-blue-400/60'
+                    'relative bg-gray-900 rounded-sm overflow-hidden transition-all group aspect-[9/16]',
+                    !device ? 'border-2 border-gray-800' :
+                        (isSelected || isDragHighlighted)
+                            ? 'border-[3px] border-blue-500 shadow-lg shadow-blue-500/40'
+                            : 'border-2 border-gray-700 hover:border-blue-400/60'
                 )}
             >
                 {/* ScreenView Full */}
