@@ -13,13 +13,15 @@ interface ScreenViewProps {
     interactive?: boolean;
     quality?: 'low' | 'high';
     syncWithSelected?: boolean; // Sync actions with other selected devices
+    paused?: boolean;
 }
 
 export const ScreenView: React.FC<ScreenViewProps> = ({
     device,
     className,
     interactive = true,
-    syncWithSelected = false
+    syncWithSelected = false,
+    paused = false
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [dimensions, setDimensions] = useState({ width: 288, height: 600 });

@@ -70,7 +70,27 @@ interface AppStore {
     // Shared expand button position
     expandButtonPosition: { x: number; y: number };
     setExpandButtonPosition: (position: { x: number; y: number }) => void;
+
+    // Tag Management & Filtering
+    availableTags: string[];
+    filterTag: string | null;
+    filterUntagged: boolean;
+    showSelectedOnly: boolean;
+
+    addTag: (tagName: string) => void;
+    // assignTagToDevice(s) - updateDevice can handle this, but specific helper is nice
+    assignTag: (deviceId: string, tagName: string) => void;
+    removeTag: (deviceId: string, tagName: string) => void;
+
+    setFilterTag: (tagName: string | null) => void;
+    setFilterUntagged: (enabled: boolean) => void;
+    setShowSelectedOnly: (enabled: boolean) => void;
+
+    renameTag: (oldName: string, newName: string) => void;
+    deleteTag: (tagName: string) => void;
+    updateDeviceSlot: (deviceId: string, newSlot: number) => void;
 }
+
 
 export const useAppStore = create<AppStore>((set, get) => ({
     // Initial state
@@ -84,12 +104,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     // Device actions
     setDevices: (devices) => {
+        // DEBUG: Log incoming devices
+        console.log('[Store] setDevices called with', devices.length, 'devices:', devices.map(d => d.id));
+
+        // DEDUPLICATE: Ensure no duplicate device IDs
+        const uniqueDevicesMap = new Map<string, typeof devices[0]>();
+        devices.forEach(device => {
+            if (!uniqueDevicesMap.has(device.id)) {
+                uniqueDevicesMap.set(device.id, device);
+            } else {
+                console.warn('[Store] Duplicate device ID found:', device.id);
+            }
+        });
+        const uniqueDevices = Array.from(uniqueDevicesMap.values());
+
+        console.log('[Store] After dedup:', uniqueDevices.length, 'unique devices');
+
         const state = get();
         // Auto-register new devices when setting devices
         const newRegistry = { ...state.deviceSlotRegistry };
         let hasChanges = false;
 
-        devices.forEach(device => {
+        uniqueDevices.forEach(device => {
             if (!(device.id in newRegistry)) {
                 // Assign next available slot
                 const usedSlots = Object.values(newRegistry);
@@ -101,9 +137,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
         if (hasChanges) {
             saveSlotRegistry(newRegistry);
-            set({ devices, deviceSlotRegistry: newRegistry });
+            set({ devices: uniqueDevices, deviceSlotRegistry: newRegistry });
         } else {
-            set({ devices });
+            set({ devices: uniqueDevices });
         }
     },
 
@@ -194,7 +230,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Connection state
     setConnected: (connected) => set({ isConnected: connected }),
 
-    // Helper: Get devices sorted by slot position (including empty slots)
+    // Helper: Get devices sorted by slot position (only currently connected devices)
     getDevicesBySlot: () => {
         const state = get();
         const registry = state.deviceSlotRegistry;
@@ -204,13 +240,95 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const deviceMap = new Map<string, Device>();
         devices.forEach(d => deviceMap.set(d.id, d));
 
-        // Get all slots sorted by slot index
-        const slots = Object.entries(registry).sort((a, b) => a[1] - b[1]);
+        // Get all slots sorted by slot index, but ONLY for devices that currently exist
+        const slots = Object.entries(registry)
+            .filter(([deviceId]) => deviceMap.has(deviceId)) // Only include devices that are currently connected
+            .sort((a, b) => a[1] - b[1]);
 
-        // Return array with device or null for each slot
-        return slots.map(([deviceId, _slotIdx]) => deviceMap.get(deviceId) || null);
+        // Return array with device for each slot (no nulls since we filtered)
+        return slots.map(([deviceId]) => deviceMap.get(deviceId)!);
     },
 
     expandButtonPosition: { x: 10, y: 10 },
     setExpandButtonPosition: (position) => set({ expandButtonPosition: position }),
+
+    // Tag & Filtering Implementation
+    // Load from localStorage if available
+    availableTags: (() => {
+        try {
+            const stored = localStorage.getItem('available_tags');
+            return stored ? JSON.parse(stored) : [];
+        } catch {
+            return [];
+        }
+    })(),
+    filterTag: null,
+    filterUntagged: false,
+    showSelectedOnly: false,
+
+    addTag: (tagName) => set((state) => {
+        if (state.availableTags.includes(tagName)) return state;
+        const newTags = [...state.availableTags, tagName];
+        localStorage.setItem('available_tags', JSON.stringify(newTags));
+        return { availableTags: newTags };
+    }),
+
+    assignTag: (deviceId, tagName) => set((state) => ({
+        devices: state.devices.map(d => {
+            if (d.id === deviceId) {
+                const currentTags = d.tags || [];
+                if (!currentTags.includes(tagName)) {
+                    return { ...d, tags: [...currentTags, tagName] };
+                }
+            }
+            return d;
+        })
+    })),
+
+    removeTag: (deviceId, tagName) => set((state) => ({
+        devices: state.devices.map(d => {
+            if (d.id === deviceId && d.tags) {
+                return { ...d, tags: d.tags.filter(t => t !== tagName) };
+            }
+            return d;
+        })
+    })),
+
+    setFilterTag: (tagName) => set({ filterTag: tagName, filterUntagged: false }),
+    setFilterUntagged: (enabled) => set({ filterUntagged: enabled, filterTag: null }),
+    setShowSelectedOnly: (enabled) => set({ showSelectedOnly: enabled }),
+
+    renameTag: (oldName: string, newName: string) => set((state) => {
+        const newTags = state.availableTags.map(t => t === oldName ? newName : t);
+        localStorage.setItem('available_tags', JSON.stringify(newTags));
+        return {
+            availableTags: newTags,
+            devices: state.devices.map(d => {
+                if (d.tags?.includes(oldName)) {
+                    return { ...d, tags: d.tags.map(t => t === oldName ? newName : t) };
+                }
+                return d;
+            }),
+            filterTag: state.filterTag === oldName ? newName : state.filterTag
+        };
+    }),
+
+    deleteTag: (tagName: string) => set((state) => {
+        const newTags = state.availableTags.filter(t => t !== tagName);
+        localStorage.setItem('available_tags', JSON.stringify(newTags));
+        return {
+            availableTags: newTags,
+            devices: state.devices.map(d => {
+                if (d.tags?.includes(tagName)) {
+                    return { ...d, tags: d.tags.filter(t => t !== tagName) };
+                }
+                return d;
+            }),
+            filterTag: state.filterTag === tagName ? null : state.filterTag
+        };
+    }),
+
+    updateDeviceSlot: (deviceId: string, newSlot: number) => set((state) => ({
+        deviceSlotRegistry: { ...state.deviceSlotRegistry, [deviceId]: newSlot }
+    })),
 }));

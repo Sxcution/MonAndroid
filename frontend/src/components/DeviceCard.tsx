@@ -5,19 +5,19 @@ import { Search } from 'lucide-react';
 import { cn } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { deviceService } from '@/services/deviceService';
+import { DeviceContextMenu } from './DeviceContextMenu';
 
 interface DeviceCardProps {
     device: Device | null;
     slotIndex: number;
     isSelected: boolean;
     isDragHighlighted?: boolean;
-    onSelect: () => void;
+    onSelect: (isCtrl?: boolean, isShift?: boolean) => void;
     onExpand: () => void;
 }
 
 export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, isSelected, isDragHighlighted = false, onSelect, onExpand }) => {
-    const { expandedDeviceId, expandButtonPosition, setExpandButtonPosition, selectedDevices } = useAppStore();
+    const { expandedDeviceId, expandButtonPosition, setExpandButtonPosition, selectedDevices, deviceSlotRegistry, updateDeviceSlot } = useAppStore();
     const { showDeviceName } = useSettingsStore();
     const isExpanded = device ? expandedDeviceId === device.id : false;
     const [isHovered, setIsHovered] = useState(false);
@@ -64,28 +64,33 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
 
     const didSelectOnDown = useRef(false);
 
-    const handleMouseDownSelect: React.MouseEventHandler<HTMLDivElement> = (e) => {
-        // Only left click triggers selection here
-        // Avoid conflict with drag button or other interactions
-        if (e.button !== 0) return;
+    const handleMouseDownSelect = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+        let isCtrl = false;
+        let isShift = false;
 
-        // Ignore if interacting with the screen (canvas)
-        if ((e.target as HTMLElement).tagName.toLowerCase() === 'canvas') return;
+        if ('ctrlKey' in e) {
+            isCtrl = e.ctrlKey || e.metaKey;
+            isShift = e.shiftKey;
+        }
 
-        // Instant feedback: toggle selection immediately on mousedown
-        e.preventDefault();
+        // Only left click for mouse
+        if ('button' in e && (e as React.MouseEvent).button !== 0) return;
+
+        const isCanvasClick = (e.target as HTMLElement).tagName.toLowerCase() === 'canvas';
+
+        // If clicking on canvas WITHOUT Ctrl - let it pass through for phone interaction
+        if (isCanvasClick && !isCtrl) {
+            return;
+        }
+
+        // If Ctrl+clicking on canvas - handle selection and prevent phone interaction
+        if (isCanvasClick && isCtrl) {
+            e.stopPropagation();
+            e.preventDefault();
+        }
+
         didSelectOnDown.current = true;
-        onSelect();
-    };
-
-    const handleTouchStartSelect: React.TouchEventHandler<HTMLDivElement> = (e) => {
-        // Ignore if interacting with the screen (canvas)
-        if ((e.target as HTMLElement).tagName.toLowerCase() === 'canvas') return;
-
-        // Remove touch delay
-        e.preventDefault();
-        didSelectOnDown.current = true;
-        onSelect();
+        onSelect(isCtrl, isShift);
     };
 
     const handleClickWrapper: React.MouseEventHandler<HTMLDivElement> = () => {
@@ -121,88 +126,159 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
     // Since we are moving onSelect to mousedown, we don't need it here for Ctrl+click anymore if mousedown handles it.
     // The mousedown handler above handles the selection.
 
+    // Context Menu State
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
+
+    // Close context menu on click outside
+    useEffect(() => {
+        const handleClickOutside = () => setContextMenu(null);
+        if (contextMenu) {
+            document.addEventListener('click', handleClickOutside);
+        }
+        return () => document.removeEventListener('click', handleClickOutside);
+    }, [contextMenu]);
+
+    // Right-click = Android Back button (restore original behavior)
+    const handleRightClick = (e: React.MouseEvent) => {
+        e.preventDefault();
+        if (!device || device.status !== 'online') return;
+
+        // Import deviceService dynamically to avoid circular deps
+        import('@/services/deviceService').then(({ deviceService }) => {
+            deviceService.goBack(device.id);
+        });
+    };
+
+    // Alt+Click = Open context menu
+    const handleAltClick = (e: React.MouseEvent) => {
+        if (!device) return;
+        if (!e.altKey) return false; // Not an alt+click
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Calculate position (keep inside viewport)
+        const x = Math.min(e.clientX, window.innerWidth - 200);
+        const y = Math.min(e.clientY, window.innerHeight - 200);
+        setContextMenu({ x, y });
+        return true; // Handled
+    };
+
     return (
-        <div
-            ref={containerRef}
-            data-device-id={device?.id}
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
-            onContextMenu={(e) => {
-                e.preventDefault();
-                if (device && device.status === 'online') {
-                    deviceService.goBack(device.id);
-                }
-            }}
-            onMouseDown={handleMouseDownSelect}
-            onTouchStart={handleTouchStartSelect}
-            onClick={handleClickWrapper}
-            style={{ touchAction: 'manipulation', userSelect: 'none' }}
-            className={cn(
-                'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
-                !device ? 'border-gray-800' :
-                    (isSelected || isDragHighlighted) ? 'border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-700 hover:border-blue-400/60'
-            )}
-        >
-            {/* ScreenView Full */}
-            <div className="absolute inset-0">
-                {device && device.status === 'online' ? (
-                    <ScreenView
-                        device={device}
-                        className="w-full h-full"
-                        interactive={true}
-                        syncWithSelected={isSelected && selectedDevices.length > 1}
-                    />
-                ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 text-xs gap-2">
-                        <div className="text-6xl font-bold text-gray-800">
-                            {String(slotIndex + 1).padStart(2, '0')}
-                        </div>
-                        <div className="text-sm text-gray-600">
-                            {device ? 'Offline' : 'Chưa kết nối'}
-                        </div>
-                    </div>
+        <>
+            <div
+                ref={containerRef}
+                data-device-id={device?.id}
+                onMouseEnter={() => setIsHovered(true)}
+                onMouseLeave={() => setIsHovered(false)}
+                onContextMenu={handleRightClick}
+                onMouseDown={handleMouseDownSelect}
+                onTouchStart={handleMouseDownSelect}
+                onClick={(e) => {
+                    // Alt+click opens context menu
+                    if (handleAltClick(e)) return;
+                    handleClickWrapper(e);
+                }}
+                style={{ touchAction: 'manipulation', userSelect: 'none' }}
+                className={cn(
+                    'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
+                    !device ? 'border-gray-800' :
+                        (isSelected || isDragHighlighted) ? 'border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-700 hover:border-blue-400/60'
                 )}
+            >
+                {/* ScreenView Full */}
+                <div className="absolute inset-0">
+                    {device && device.status === 'online' ? (
+                        <ScreenView
+                            device={device}
+                            className="w-full h-full"
+                            interactive={!isExpanded} // Disable interaction if expanded (overlay covers it anyway)
+                            paused={isExpanded} // Pause rendering if expanded
+                            syncWithSelected={isSelected && selectedDevices.length > 1}
+                        />
+                    ) : (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 text-xs gap-2">
+                            <div className="text-6xl font-bold text-gray-800">
+                                {String(slotIndex + 1).padStart(2, '0')}
+                            </div>
+                            <div className="text-sm text-gray-600">
+                                {device ? 'Offline' : 'Chưa kết nối'}
+                            </div>
+                        </div>
+                    )}
 
-                {/* Expanded overlay */}
-                {isExpanded && (
-                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 pointer-events-none border-2 border-yellow-500/50">
-                        <span className="text-yellow-500 font-bold text-sm animate-pulse px-2 py-1 bg-black/40 rounded">
-                            Đang điều khiển
-                        </span>
-                    </div>
-                )}
+                    {/* Expanded overlay */}
+                    {isExpanded && (
+                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 pointer-events-none border-2 border-yellow-500/50">
+                            <span className="text-yellow-500 font-bold text-sm animate-pulse px-2 py-1 bg-black/40 rounded">
+                                Đang điều khiển
+                            </span>
+                        </div>
+                    )}
 
-                {/* Device name */}
-                {showDeviceName && device && (
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
-                        {device.name || device.adb_device_id}
-                    </div>
+                    {/* Device name */}
+                    {showDeviceName && device && (
+                        <div className="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-[2px] p-1 text-[10px] text-white/80 truncate text-center pointer-events-none">
+                            {device.name || device.adb_device_id}
+                        </div>
+                    )}
+                </div>
+
+                {/* Expand button (magnifying glass) */}
+                {device && device.status === 'online' && isHovered && (
+                    <button
+                        ref={btnRef}
+                        onMouseDown={handleMouseDownBtn}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (!hasDragged.current) {
+                                onExpand();
+                            }
+                        }}
+                        style={{
+                            top: `${expandButtonPosition.y}px`,
+                            left: `${expandButtonPosition.x}px`,
+                            position: 'absolute',
+                        }}
+                        className="z-20 w-5 h-5 flex items-center justify-center bg-gray-800/80 hover:bg-blue-600 text-white rounded-full shadow-lg backdrop-blur-sm border border-white/10 transition-colors cursor-grab active:cursor-grabbing"
+                        title="Phóng to"
+                    >
+                        <Search size={10} />
+                    </button>
                 )}
             </div>
 
-            {/* Expand button (magnifying glass) */}
-            {device && device.status === 'online' && isHovered && (
-                <button
-                    ref={btnRef}
-                    onMouseDown={handleMouseDownBtn}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        if (!hasDragged.current) {
-                            onExpand();
-                        }
-                    }}
-                    style={{
-                        top: `${expandButtonPosition.y}px`,
-                        left: `${expandButtonPosition.x}px`,
-                        position: 'absolute',
-                    }}
-                    className="z-20 w-5 h-5 flex items-center justify-center bg-gray-800/80 hover:bg-blue-600 text-white rounded-full shadow-lg backdrop-blur-sm border border-white/10 transition-colors cursor-grab active:cursor-grabbing"
-                    title="Phóng to"
-                >
-                    <Search size={10} />
-                </button>
+            {/* Context Menu Portal */}
+            {contextMenu && device && (
+                <>
+                    <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setContextMenu(null)}
+                        onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}
+                    />
+                    <DeviceContextMenu
+                        device={device}
+                        x={contextMenu.x}
+                        y={contextMenu.y}
+                        onClose={() => setContextMenu(null)}
+                        onUpdateSlot={() => {
+                            const currentSlot = deviceSlotRegistry[device.id];
+                            // Using prompt for simplicity as "Change Slot" modal wasn't explicitly requested as complex UI, 
+                            // but prompt is native and blocks. A true Modal is better but time is tight.
+                            // The user said "Click into a single cell... menu name Change slot".
+                            // I am putting it in main context menu.
+                            const input = window.prompt("Nhập số hiệu mới (VD: 01, 15):", String((currentSlot || 0) + 1));
+                            if (input) {
+                                const num = parseInt(input);
+                                if (!isNaN(num) && num > 0) {
+                                    updateDeviceSlot(device.id, num - 1); // Store is 0-indexed
+                                }
+                            }
+                        }}
+                    />
+                </>
             )}
-        </div>
+        </>
     );
 });
 

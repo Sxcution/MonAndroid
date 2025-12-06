@@ -8,6 +8,7 @@ export interface Device {
     android_version: string;
     last_seen: number;
     frame?: string; // base64 encoded screen frame
+    tags?: string[]; // Device tags
 }
 
 export interface DeviceGroup {

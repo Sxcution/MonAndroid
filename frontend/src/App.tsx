@@ -11,8 +11,19 @@ import {
     Settings,
     Wifi,
     WifiOff,
-    Type
+    Type,
+    Tag as TagIcon,
+    Plus,
+    Square,
+    CheckSquare,
+    Filter,
+    Edit3,
+    Trash2
 } from 'lucide-react';
+import { AddTagModal } from './components/AddTagModal';
+import { EditTagModal } from './components/EditTagModal';
+import { DeviceContextMenu } from './components/DeviceContextMenu';
+import { Device } from './types/device';
 
 function App() {
     const {
@@ -27,14 +38,84 @@ function App() {
         clearDeviceSelection,
         toggleDeviceSelection,
         selectAllDevices,
+        // Tag Store
+        availableTags,
+        filterTag,
+        filterUntagged,
+        showSelectedOnly,
+        setFilterTag,
+        setFilterUntagged,
+        setShowSelectedOnly,
+        // removeTag, 
+        deviceSlotRegistry, // Get registry for slot numbers
+        deleteTag
     } = useAppStore();
 
     const [isScanning, setIsScanning] = useState(false);
     const [batchInput, setBatchInput] = useState('');
     const [showBatchInput, setShowBatchInput] = useState(false);
+    const [showAddTag, setShowAddTag] = useState(false);
+    const [editingTag, setEditingTag] = useState<string | null>(null); // Tag name being edited
+    const [slotContextMenu, setSlotContextMenu] = useState<{ device: Device, x: number, y: number } | null>(null);
+
     const [showSettings, setShowSettings] = useState(false);
     const [sidebarVisible, setSidebarVisible] = useState(false);
     const [scanVersion, setScanVersion] = useState(0); // Increments to force re-mount ScreenView
+
+    // Helper to render device slot buttons
+    const renderDeviceSlots = (deviceList: typeof devices) => {
+        if (deviceList.length === 0) return null;
+
+        // Sort by slot index
+        const sorted = [...deviceList].sort((a, b) => {
+            const slotA = deviceSlotRegistry[a.id] ?? 999;
+            const slotB = deviceSlotRegistry[b.id] ?? 999;
+            return slotA - slotB;
+        });
+
+        return (
+            <div className="flex flex-wrap gap-1 mt-1 px-1">
+                {sorted.map(device => {
+                    const slotNum = (deviceSlotRegistry[device.id] ?? 999) + 1;
+                    const isSelected = selectedDevices.includes(device.id);
+                    return (
+                        <button
+                            key={device.id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (e.ctrlKey) {
+                                    toggleDeviceSelection(device.id);
+                                } else {
+                                    // Check if we mean exclusive select or toggle?
+                                    // Usually sidebar slots might just toggle, or select exclusive.
+                                    // Let's allow toggle with click for convenience in sidebar
+                                    toggleDeviceSelection(device.id);
+                                }
+                            }}
+                            onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setSlotContextMenu({
+                                    device,
+                                    x: e.clientX,
+                                    y: e.clientY
+                                });
+                            }}
+                            className={`
+                                text-[10px] min-w-[24px] h-[20px] px-1 rounded flex items-center justify-center font-mono border transition-colors
+                                ${isSelected
+                                    ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-300'}
+                            `}
+                            title={device.name || device.adb_device_id}
+                        >
+                            {String(slotNum).padStart(2, '0')}
+                        </button>
+                    );
+                })}
+            </div>
+        );
+    };
 
     // Ctrl+A to select all
     useEffect(() => {
@@ -267,7 +348,7 @@ function App() {
                     </div>
 
                     {/* Sidebar Actions */}
-                    <div className="flex-1 p-3 space-y-2">
+                    <div className="flex-1 p-3 space-y-4 overflow-y-auto scrollbar-hide">
                         <button
                             onClick={() => setShowSettings(true)}
                             className="w-full flex items-center gap-3 px-4 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm"
@@ -276,8 +357,129 @@ function App() {
                             Settings
                         </button>
 
+                        {/* --- Phone Tags Section --- */}
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between text-gray-400 px-1">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                    <TagIcon size={14} />
+                                    <span>Thẻ điện thoại</span>
+                                </div>
+                                <button
+                                    onClick={() => setShowAddTag(true)}
+                                    className="text-blue-500 hover:text-blue-400 flex items-center gap-1 text-xs"
+                                >
+                                    <Plus size={12} /> Thêm
+                                </button>
+                            </div>
+
+                            <div className="space-y-3">
+                                {/* All Devices (Reset Filters) */}
+                                <div>
+                                    <div
+                                        onClick={() => {
+                                            setFilterTag(null);
+                                            setFilterUntagged(false);
+                                            setShowSelectedOnly(false);
+                                        }}
+                                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${(!filterTag && !filterUntagged && !showSelectedOnly) ? 'bg-blue-600/20 text-blue-400' : 'text-gray-400 hover:bg-gray-800'}`}
+                                    >
+                                        <Filter size={14} />
+                                        <span>Tất cả điện thoại</span>
+                                    </div>
+                                    {/* Show slots for ALL devices if "All" is active (or maybe always? User image implies showing under categories) */}
+                                    {/* If All Devices is active, showing ALL numbers might be too much if there are 100 devices. 
+                                        But based on the image, "Tất cả..." has numbers under it. */}
+                                    {(!filterTag && !filterUntagged && !showSelectedOnly) && renderDeviceSlots(devices)}
+                                </div>
+
+
+                                {/* Toggle: Show Selected Only */}
+                                <div>
+                                    <div
+                                        onClick={() => setShowSelectedOnly(!showSelectedOnly)}
+                                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${(showSelectedOnly) ? 'text-blue-400' : 'text-gray-400 hover:bg-gray-800'}`}
+                                    >
+                                        {showSelectedOnly ? <CheckSquare size={14} /> : <Square size={14} />}
+                                        <span>Hiển thị đã chọn</span>
+                                    </div>
+                                    {showSelectedOnly && renderDeviceSlots(devices.filter(d => selectedDevices.includes(d.id)))}
+                                </div>
+
+
+                                {/* Toggle: Untagged */}
+                                <div>
+                                    <div
+                                        onClick={() => setFilterUntagged(!filterUntagged)}
+                                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${(filterUntagged) ? 'text-blue-400 bg-blue-600/10' : 'text-gray-400 hover:bg-gray-800'}`}
+                                    >
+                                        {filterUntagged ? <CheckSquare size={14} /> : <Square size={14} />}
+                                        <span>Điện thoại không có thẻ</span>
+                                        <span className="ml-auto text-xs text-gray-600">
+                                            ({devices.filter(d => !d.tags || d.tags.length === 0).length})
+                                        </span>
+                                    </div>
+                                    {/* Always show slots for this category if it has items? Or only if active? 
+                                        User image shows "Điện thoại không có thẻ (0)" collapsed. 
+                                        "Wifi (4)" expanded with numbers.
+                                        It seems they want to see the numbers belonging to that group.
+                                    */}
+                                    {renderDeviceSlots(devices.filter(d => !d.tags || d.tags.length === 0))}
+                                </div>
+
+                                {/* Dynamic Tags List */}
+                                {availableTags.map(tag => {
+                                    const tagDevices = devices.filter(d => d.tags?.includes(tag));
+                                    const count = tagDevices.length;
+                                    const isActive = filterTag === tag;
+                                    return (
+                                        <div key={tag}>
+                                            <div
+                                                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm group ${isActive ? 'bg-blue-600/20 text-blue-400' : 'text-gray-400 hover:bg-gray-800'}`}
+                                            >
+                                                <div
+                                                    className="flex items-center gap-2 flex-1 overflow-hidden"
+                                                    onClick={() => setFilterTag(isActive ? null : tag)}
+                                                >
+                                                    {isActive ? <CheckSquare size={14} /> : <Square size={14} />}
+                                                    <span className="truncate flex-1">{tag}</span>
+                                                    <span className="text-xs text-gray-600 group-hover:text-gray-500">({count})</span>
+                                                </div>
+
+                                                {/* Actions */}
+                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setEditingTag(tag);
+                                                        }}
+                                                        className="p-1 hover:text-white text-gray-500 transition-colors"
+                                                        title="Đổi tên"
+                                                    >
+                                                        <Edit3 size={12} />
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            if (window.confirm(`Xóa thẻ "${tag}"?`)) {
+                                                                deleteTag(tag);
+                                                            }
+                                                        }}
+                                                        className="p-1 hover:text-red-400 text-gray-500 transition-colors"
+                                                        title="Xóa thẻ"
+                                                    >
+                                                        <Trash2 size={12} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {renderDeviceSlots(tagDevices)}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
                         {/* Device count info */}
-                        <div className="mt-4 p-3 bg-gray-800/50 rounded-lg">
+                        <div className="p-3 bg-gray-800/50 rounded-lg">
                             <div className="text-xs text-gray-400">Devices</div>
                             <div className="text-2xl font-bold text-white">
                                 {devices.filter(d => d.status === 'online').length}
@@ -287,7 +489,7 @@ function App() {
 
                         {/* Selected devices */}
                         {selectedDevices.length > 0 && (
-                            <div className="mt-4 p-3 bg-blue-900/30 border border-blue-700/50 rounded-lg">
+                            <div className="p-3 bg-blue-900/30 border border-blue-700/50 rounded-lg">
                                 <div className="text-xs text-blue-400 mb-2">
                                     {selectedDevices.length} device(s) selected
                                 </div>
@@ -338,6 +540,49 @@ function App() {
                 <div className="modal">
                     <SettingsModal onClose={() => setShowSettings(false)} />
                 </div>
+            )}
+
+            {/* Add Tag Modal */}
+            {showAddTag && (
+                <AddTagModal onClose={() => setShowAddTag(false)} />
+            )}
+
+            {/* Edit Tag Modal */}
+            {editingTag && (
+                <EditTagModal
+                    oldTagName={editingTag}
+                    onClose={() => setEditingTag(null)}
+                />
+            )}
+
+            {/* Sidebar Slot Context Menu */}
+            {slotContextMenu && (
+                <>
+                    <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setSlotContextMenu(null)}
+                        onContextMenu={(e) => { e.preventDefault(); setSlotContextMenu(null); }}
+                    />
+                    <DeviceContextMenu
+                        device={slotContextMenu.device}
+                        x={slotContextMenu.x}
+                        y={slotContextMenu.y}
+                        onClose={() => setSlotContextMenu(null)}
+                        onUpdateSlot={() => {
+                            const currentSlot = deviceSlotRegistry[slotContextMenu.device.id];
+                            const input = window.prompt("Nhập số hiệu mới (VD: 01, 15):", String((currentSlot || 0) + 1));
+                            if (input) {
+                                const num = parseInt(input);
+                                if (!isNaN(num) && num > 0) {
+                                    // We need updateDeviceSlot action here. 
+                                    // App.tsx destructures deleteTag but not updateDeviceSlot.
+                                    // Need to add updateDeviceSlot to destructuring above.
+                                    useAppStore.getState().updateDeviceSlot(slotContextMenu.device.id, num - 1);
+                                }
+                            }
+                        }}
+                    />
+                </>
             )}
 
             {/* Batch input modal */}

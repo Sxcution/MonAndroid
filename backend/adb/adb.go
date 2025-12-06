@@ -23,6 +23,7 @@ func NewADBClient() *ADBClient {
 }
 
 // ListDevices returns a list of connected Android devices
+// If the same physical device is connected via both USB and WiFi, WiFi is preferred
 func (c *ADBClient) ListDevices() ([]models.Device, error) {
 	cmd := exec.Command(c.ADBPath, "devices", "-l")
 	output, err := cmd.Output()
@@ -32,7 +33,76 @@ func (c *ADBClient) ListDevices() ([]models.Device, error) {
 
 	fmt.Println("📱 ADB Output:")
 	fmt.Println(string(output))
-	return c.parseDeviceList(string(output))
+
+	devices, err := c.parseDeviceList(string(output))
+	if err != nil {
+		return nil, err
+	}
+
+	// Deduplicate: If same physical device connected via USB and WiFi, prefer WiFi
+	return c.deduplicateDevices(devices), nil
+}
+
+// getSerialNumber gets the hardware serial number of the device
+func (c *ADBClient) getSerialNumber(adbDeviceID string) string {
+	cmd := exec.Command(c.ADBPath, "-s", adbDeviceID, "shell", "getprop", "ro.serialno")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// isWiFiConnection checks if the device ID is a WiFi connection (IP:port format)
+func isWiFiConnection(adbDeviceID string) bool {
+	return strings.Contains(adbDeviceID, ":")
+}
+
+// deduplicateDevices removes duplicate entries when same device is connected via USB and WiFi
+// WiFi connections are preferred over USB
+func (c *ADBClient) deduplicateDevices(devices []models.Device) []models.Device {
+	// Map hardware serial -> device (prefer WiFi)
+	serialToDevice := make(map[string]models.Device)
+
+	// First pass: get hardware serial for each device
+	for i := range devices {
+		hwSerial := c.getSerialNumber(devices[i].ADBDeviceID)
+		if hwSerial == "" {
+			// Can't get serial, keep device as-is using ADB ID as key
+			hwSerial = devices[i].ADBDeviceID
+		}
+		devices[i].HardwareSerial = hwSerial // Store for reference
+
+		existing, exists := serialToDevice[hwSerial]
+		if !exists {
+			serialToDevice[hwSerial] = devices[i]
+		} else {
+			// Duplicate found - prefer WiFi connection
+			currentIsWiFi := isWiFiConnection(devices[i].ADBDeviceID)
+			existingIsWiFi := isWiFiConnection(existing.ADBDeviceID)
+
+			if currentIsWiFi && !existingIsWiFi {
+				// Current is WiFi, existing is USB - replace with WiFi
+				fmt.Printf("🔄 Dedup: Preferring WiFi %s over USB %s (same device: %s)\n",
+					devices[i].ADBDeviceID, existing.ADBDeviceID, hwSerial)
+				serialToDevice[hwSerial] = devices[i]
+			} else if !currentIsWiFi && existingIsWiFi {
+				// Current is USB, existing is WiFi - keep WiFi
+				fmt.Printf("🔄 Dedup: Keeping WiFi %s over USB %s (same device: %s)\n",
+					existing.ADBDeviceID, devices[i].ADBDeviceID, hwSerial)
+			}
+			// If both are same type, keep the first one
+		}
+	}
+
+	// Convert map back to slice
+	result := make([]models.Device, 0, len(serialToDevice))
+	for _, device := range serialToDevice {
+		result = append(result, device)
+	}
+
+	fmt.Printf("📊 Dedup result: %d devices (from %d raw)\n", len(result), len(devices))
+	return result
 }
 
 // parseDeviceList parses the output of 'adb devices -l'

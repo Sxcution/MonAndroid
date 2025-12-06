@@ -4,7 +4,8 @@ type Device struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	ADBDeviceID    string `json:"adb_device_id"`
-	Status         string `json:"status"` // online, offline
+	HardwareSerial string `json:"hardware_serial,omitempty"` // Actual device serial for dedup
+	Status         string `json:"status"`                    // online, offline
 	Resolution     string `json:"resolution"`
 	Battery        int    `json:"battery"`
 	AndroidVersion string `json:"android_version"`
