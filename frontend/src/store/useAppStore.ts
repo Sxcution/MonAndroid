@@ -47,6 +47,7 @@ interface AppStore {
     removeDevice: (id: string) => void;
     updateDevice: (id: string, updates: Partial<Device>) => void;
     toggleDeviceSelection: (id: string) => void;
+    selectAllDevices: () => void;
     selectDevice: (id: string | null) => void;
     clearDeviceSelection: () => void;
     setExpandedDevice: (id: string | null) => void;
@@ -149,6 +150,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedDevices: state.selectedDevices.includes(id)
             ? state.selectedDevices.filter(d => d !== id)
             : [...state.selectedDevices, id]
+    })),
+
+    selectAllDevices: () => set((state) => ({
+        selectedDevices: state.devices.map(d => d.id)
     })),
 
     selectDevice: (id) => set((state) => ({

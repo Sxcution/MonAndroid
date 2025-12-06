@@ -26,6 +26,7 @@ function App() {
         setConnected,
         clearDeviceSelection,
         toggleDeviceSelection,
+        selectAllDevices,
     } = useAppStore();
 
     const [isScanning, setIsScanning] = useState(false);
@@ -34,6 +35,22 @@ function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [sidebarVisible, setSidebarVisible] = useState(false);
     const [scanVersion, setScanVersion] = useState(0); // Increments to force re-mount ScreenView
+
+    // Ctrl+A to select all
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                // Don't Select All when a device is expanded (viewer mode)
+                // We want to pass keys to the device instead
+                if (!expandedDeviceId) {
+                    e.preventDefault();
+                    selectAllDevices();
+                }
+            }
+        };
+        window.addEventListener('keydown', onKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+    }, [selectAllDevices, expandedDeviceId]);
 
     // Drag selection state
     const [isDragging, setIsDragging] = useState(false);

@@ -62,17 +62,64 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
         };
     }, []);
 
-    // Handle Ctrl+Click for selection
-    const handleClick = (e: React.MouseEvent) => {
+    const didSelectOnDown = useRef(false);
+
+    const handleMouseDownSelect: React.MouseEventHandler<HTMLDivElement> = (e) => {
+        // Only left click triggers selection here
+        // Avoid conflict with drag button or other interactions
+        if (e.button !== 0) return;
+
+        // Ignore if interacting with the screen (canvas)
+        if ((e.target as HTMLElement).tagName.toLowerCase() === 'canvas') return;
+
+        // Instant feedback: toggle selection immediately on mousedown
+        e.preventDefault();
+        didSelectOnDown.current = true;
+        onSelect();
+    };
+
+    const handleTouchStartSelect: React.TouchEventHandler<HTMLDivElement> = (e) => {
+        // Ignore if interacting with the screen (canvas)
+        if ((e.target as HTMLElement).tagName.toLowerCase() === 'canvas') return;
+
+        // Remove touch delay
+        e.preventDefault();
+        didSelectOnDown.current = true;
+        onSelect();
+    };
+
+    const handleClickWrapper: React.MouseEventHandler<HTMLDivElement> = () => {
+        // If we selected on mousedown/touchstart, skip click to avoid double toggle
+        if (didSelectOnDown.current) {
+            didSelectOnDown.current = false;
+            return;
+        }
+
+        // Handle Ctrl+Click specifically if it wasn't caught by mousedown (though mousedown should catch it)
+        // But if we want to support standard click behavior for other things, we keep this.
+        // In the specific user request, they mentioned "Sếp có handleClick cũ (mở gì đó), gọi lại ở đây"
+        // Our old handleClick was handling Ctrl+Click.
+
         if (!device) return;
 
-        // Ctrl+Click = toggle selection for multi-select
-        if (e.ctrlKey) {
-            e.stopPropagation();
-            onSelect();
-        }
-        // Normal click does nothing at card level - ScreenView handles touch
+        // If for some reason mousedown didn't fire (unlikely), we can fallback here,
+        // but primarily we just want to allow other interactions if needed.
+        // Original logic only handled Ctrl+Click. Since we moved selection to mousedown,
+        // we might not need this for selection anymore.
+
+        // However, we should be careful about the "ScreenView" interactions.
+        // The ScreenView is inside this div. We need to make sure we don't block its interactions if it's the target.
+        // The previous code had "onClick={handleClick}" on the div.
     };
+
+    // We verify if we need to keep the old handleClick for anything else. 
+    // The old handleClick:
+    // const handleClick = (e: React.MouseEvent) => {
+    //    if (!device) return;
+    //    if (e.ctrlKey) { e.stopPropagation(); onSelect(); }
+    // };
+    // Since we are moving onSelect to mousedown, we don't need it here for Ctrl+click anymore if mousedown handles it.
+    // The mousedown handler above handles the selection.
 
     return (
         <div
@@ -86,7 +133,10 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                     deviceService.goBack(device.id);
                 }
             }}
-            onClick={handleClick}
+            onMouseDown={handleMouseDownSelect}
+            onTouchStart={handleTouchStartSelect}
+            onClick={handleClickWrapper}
+            style={{ touchAction: 'manipulation', userSelect: 'none' }}
             className={cn(
                 'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',
                 !device ? 'border-gray-800' :

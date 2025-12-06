@@ -96,7 +96,10 @@ frontend/src/
 11. **Mouse Interaction:**
     - **Left-click:** Touch/swipe on device screen
     - **Ctrl+Click:** Multi-select cards (toggle selection)
+    - **Ctrl+A:** Select All cards (disabled if device is expanded)
     - **Right-click:** Go Back action (no touch)
+    - **Click/Touch on Card:** Instant selection (on mousedown/touchstart)
+    - **Click/Touch on Screen:** No selection (pass-through to device)
     - **Drag on empty area:** Select multiple cards with box
 
 12. **Selection Visual:**
