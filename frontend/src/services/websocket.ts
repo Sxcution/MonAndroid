@@ -5,8 +5,13 @@ type MessageHandler = (data: ArrayBuffer | string) => void;
 class WebSocketService {
     private ws: WebSocket | null = null;
     private subscribers: Set<MessageHandler> = new Set();
-    private reconnectTimeout: NodeJS.Timeout | null = null;
+    private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     private isConnecting = false;
+
+    // Track device subscriptions - will auto-resubscribe on reconnect
+    private deviceSubs = new Set<string>();
+    // Queue messages when socket is not open
+    private sendQueue: string[] = [];
 
     constructor() {
         this.connect();
@@ -24,10 +29,24 @@ class WebSocketService {
         this.ws.onopen = () => {
             console.log('✅ WebSocket Connected');
             this.isConnecting = false;
+
+            // Re-subscribe all tracked devices after reconnect
+            if (this.deviceSubs.size > 0) {
+                console.log(`🔄 Re-subscribing ${this.deviceSubs.size} devices...`);
+                for (const deviceId of this.deviceSubs) {
+                    this.ws!.send(JSON.stringify({ type: 'subscribe', device_id: deviceId }));
+                }
+            }
+
+            // Flush any queued messages
+            while (this.sendQueue.length > 0) {
+                const msg = this.sendQueue.shift()!;
+                this.ws!.send(msg);
+            }
         };
 
         this.ws.onmessage = (event) => {
-            // Phát tin nhắn tới tất cả component đang lắng nghe
+            // Dispatch to all listening components
             this.subscribers.forEach(handler => handler(event.data));
         };
 
@@ -51,7 +70,7 @@ class WebSocketService {
         }, 2000);
     }
 
-    // Các component sẽ gọi hàm này để đăng ký nhận dữ liệu
+    // Components register to receive binary data
     public subscribe(handler: MessageHandler) {
         this.subscribers.add(handler);
         return () => {
@@ -59,12 +78,25 @@ class WebSocketService {
         };
     }
 
+    // Subscribe to a specific device's stream (tracked for reconnect)
+    public subscribeDevice(deviceId: string) {
+        this.deviceSubs.add(deviceId);
+        this.sendMessage({ type: 'subscribe', device_id: deviceId });
+    }
+
+    // Unsubscribe from a device's stream
+    public unsubscribeDevice(deviceId: string) {
+        this.deviceSubs.delete(deviceId);
+        this.sendMessage({ type: 'unsubscribe', device_id: deviceId });
+    }
+
     public sendMessage(msg: any) {
+        const payload = typeof msg === 'string' ? msg : JSON.stringify(msg);
         if (this.ws?.readyState === WebSocket.OPEN) {
-            const payload = typeof msg === 'string' ? msg : JSON.stringify(msg);
             this.ws.send(payload);
         } else {
-            console.warn('⚠️ Cannot send message: WebSocket not open');
+            // Queue message to be sent when connection is restored
+            this.sendQueue.push(payload);
         }
     }
 
@@ -73,5 +105,5 @@ class WebSocketService {
     }
 }
 
-// Xuất ra 1 instance duy nhất (Singleton)
+// Singleton instance
 export const wsService = new WebSocketService();

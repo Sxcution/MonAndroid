@@ -60,7 +60,6 @@ function App() {
 
     const [showSettings, setShowSettings] = useState(false);
     const [sidebarVisible, setSidebarVisible] = useState(false);
-    const [scanVersion, setScanVersion] = useState(0); // Increments to force re-mount ScreenView
 
     // Helper to render device slot buttons
     const renderDeviceSlots = (deviceList: typeof devices) => {
@@ -172,8 +171,7 @@ function App() {
         try {
             const deviceList = await api.device.scanDevices();
             setDevices(deviceList);
-            // Increment scanVersion to force ScreenView re-mount and stream re-subscribe
-            setScanVersion(v => v + 1);
+            // Note: WebSocket service now auto-resubscribes on reconnect, no need for scanVersion
         } catch (error) {
             console.error('Failed to scan devices:', error);
         } finally {
@@ -519,7 +517,7 @@ function App() {
 
             {/* Main Content - Full Screen Grid */}
             <main className="w-full h-full">
-                <DeviceGrid dragHighlightedDevices={dragHighlightedDevices} scanVersion={scanVersion} />
+                <DeviceGrid dragHighlightedDevices={dragHighlightedDevices} />
             </main>
 
             {/* Expanded Device View */}

@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { Device } from '@/types/device';
 import { useAppStore } from '@/store/useAppStore';
 import { Tag, Edit, LayoutGrid, Check, ChevronRight, Settings } from 'lucide-react';
-import * as RadixContextMenu from '@radix-ui/react-context-menu'; // Assuming we don't have this, we use custom standard div. 
-// Actually, I should use absolute positioning custom div as before since I didn't install radix.
+// Using custom context menu (not radix) for flexibility
 
 // Custom Context Menu Component
 interface DeviceContextMenuProps {

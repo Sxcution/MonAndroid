@@ -21,7 +21,7 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
     className,
     interactive = true,
     syncWithSelected = false,
-    paused = false
+    paused: _paused = false // Currently unused, reserved for future pause feature
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [dimensions, setDimensions] = useState({ width: 288, height: 600 });
@@ -258,19 +258,17 @@ export const ScreenView: React.FC<ScreenViewProps> = ({
 
         const unsubscribe = wsService.subscribe(handleMessage);
 
-        // Debounce subscribe to avoid rapid mount/unmount issues
-        const subscribeTimer = setTimeout(() => {
-            wsService.sendMessage({ type: 'subscribe', device_id: device.id });
-            // Start streaming if not already running (idempotent)
-            fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => { });
-        }, 100);
+        // Subscribe to device stream using tracked API (auto-resubscribes on reconnect!)
+        wsService.subscribeDevice(device.id);
+
+        // Start streaming if not already running (idempotent)
+        fetch(`http://localhost:8080/api/streaming/start/${device.id}`, { method: 'POST' }).catch(() => { });
 
         return () => {
-            clearTimeout(subscribeTimer);
             unsubscribe();
-            // Only send unsubscribe - DO NOT call stop!
+            // Unsubscribe from device stream (removes from tracking)
+            wsService.unsubscribeDevice(device.id);
             // Stream lifecycle is device-scoped, TTL will handle cleanup
-            wsService.sendMessage({ type: 'unsubscribe', device_id: device.id });
         };
     }, [device.id, resetDecoder]);
 
