@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,43 +82,125 @@ func (c *ScrcpyClient) Start() (net.Conn, error) {
 	// Step 3: Start scrcpy server with 3.x protocol + raw_stream mode
 	// raw_stream=true: server sends pure H.264 Annex-B without any headers/meta
 	log.Printf("🚀 [%s] Starting scrcpy server (v3.3.3 raw_stream)...", c.deviceADBID)
-	serverArgs := []string{
-		"CLASSPATH=/data/local/tmp/scrcpy-server.jar",
-		"app_process",
-		"/",
-		"com.genymobile.scrcpy.Server",
-		"3.3.3",
-		fmt.Sprintf("scid=%08x", c.scid), // HEX format, 8 chars, no 0x prefix
-		"log_level=debug",
-		"video=true",
-		"audio=false",
-		"max_size=720",
-		"video_bit_rate=1500000", // 1.5Mbps for real-time mode
-		"max_fps=30",             // 60fps for smooth interaction
-		"tunnel_forward=true",
-		"control=true",    // Enable control socket for keyboard/clipboard
-		"raw_stream=true", // Pure H.264 Annex-B, no headers/meta
+
+	// Auto-reduce quality for WiFi devices (IP:port format contains ":")
+	isWiFi := strings.Contains(c.deviceADBID, ":")
+
+	// Quality profiles for retry attempts (progressively lower quality)
+	type qualityProfile struct {
+		bitRate   string
+		maxSize   string
+		maxFPS    string
+		extraArgs []string
 	}
 
-	cmd, err := c.adbClient.ExecuteCommandBackground(c.deviceADBID, serverArgs)
-	if err != nil {
+	profiles := []qualityProfile{
+		// Profile 0: Default (USB: high quality, WiFi: reduced)
+		{
+			bitRate: func() string {
+				if isWiFi {
+					return "800000"
+				}
+				return "1500000"
+			}(),
+			maxSize: func() string {
+				if isWiFi {
+					return "480"
+				}
+				return "720"
+			}(),
+			maxFPS:    "30",
+			extraArgs: []string{},
+		},
+		// Profile 1: Lower quality (for problematic encoders)
+		{
+			bitRate:   "500000",
+			maxSize:   "360",
+			maxFPS:    "24",
+			extraArgs: []string{"downsize_on_error=true"},
+		},
+		// Profile 2: Minimal quality (last resort)
+		{
+			bitRate:   "300000",
+			maxSize:   "240",
+			maxFPS:    "15",
+			extraArgs: []string{"downsize_on_error=true"},
+		},
+	}
+
+	var cmd *exec.Cmd
+	var lastErr error
+
+	for attempt, profile := range profiles {
+		if attempt > 0 {
+			log.Printf("� [%s] Retry attempt %d with reduced quality (bitrate=%s, size=%s, fps=%s)",
+				c.deviceADBID, attempt, profile.bitRate, profile.maxSize, profile.maxFPS)
+			// Re-setup forward for new SCID
+			c.adbClient.RemoveForward(c.deviceADBID, c.localPort)
+			c.scid = rand.Uint32() & 0x7FFFFFFF
+			socketName = fmt.Sprintf("scrcpy_%08x", c.scid)
+			c.localPort = findFreePort()
+			if err := c.adbClient.Forward(c.deviceADBID, c.localPort, socketName); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+
+		serverArgs := []string{
+			"CLASSPATH=/data/local/tmp/scrcpy-server.jar",
+			"app_process",
+			"/",
+			"com.genymobile.scrcpy.Server",
+			"3.3.3",
+			fmt.Sprintf("scid=%08x", c.scid),
+			"log_level=debug",
+			"video=true",
+			"audio=false",
+			"max_size=" + profile.maxSize,
+			"video_bit_rate=" + profile.bitRate,
+			"max_fps=" + profile.maxFPS,
+			"tunnel_forward=true",
+			"control=true",
+			"raw_stream=true",
+		}
+		serverArgs = append(serverArgs, profile.extraArgs...)
+
+		cmd, lastErr = c.adbClient.ExecuteCommandBackground(c.deviceADBID, serverArgs)
+		if lastErr != nil {
+			log.Printf("⚠️ [%s] Failed to start server (attempt %d): %v", c.deviceADBID, attempt+1, lastErr)
+			continue
+		}
+
+		c.serverCmd = cmd
+		log.Printf("✅ [%s] Scrcpy server started (PID: %d, profile: %d)", c.deviceADBID, cmd.Process.Pid, attempt)
+
+		// Wait longer for problematic devices
+		waitTime := 1500 * time.Millisecond
+		if attempt > 0 {
+			waitTime = 2500 * time.Millisecond // Extra time for fallback profiles
+		}
+		time.Sleep(waitTime)
+
+		// Try to connect
+		conn, err := c.connectWithRetry(10, 300*time.Millisecond)
+		if err != nil {
+			log.Printf("⚠️ [%s] Connection failed (attempt %d): %v", c.deviceADBID, attempt+1, err)
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			lastErr = err
+			continue
+		}
+
+		c.conn = conn
+		log.Printf("✅ [%s] Video socket connected using profile %d", c.deviceADBID, attempt)
+		break // Success!
+	}
+
+	if c.conn == nil {
 		c.cleanup()
-		return nil, fmt.Errorf("failed to start scrcpy server: %w", err)
+		return nil, fmt.Errorf("all quality profiles failed: %w", lastErr)
 	}
-	c.serverCmd = cmd
-	log.Printf("✅ [%s] Scrcpy server process started (PID: %d)", c.deviceADBID, cmd.Process.Pid)
-
-	// Step 4: Wait for server to initialize (need enough time for app_process to start)
-	time.Sleep(1500 * time.Millisecond)
-
-	// Step 5: Connect to the server with retry (VIDEO socket)
-	log.Printf("🔗 [%s] Connecting to scrcpy video socket...", c.deviceADBID)
-	conn, err := c.connectWithRetry(10, 300*time.Millisecond)
-	if err != nil {
-		c.cleanup()
-		return nil, fmt.Errorf("failed to connect to scrcpy server: %w", err)
-	}
-	c.conn = conn
 
 	// Step 5b: Connect control socket (second connection to same socket)
 	log.Printf("🎮 [%s] Connecting to scrcpy control socket...", c.deviceADBID)

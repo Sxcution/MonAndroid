@@ -139,29 +139,24 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
     }, [contextMenu]);
 
     // Right-click = Android Back button (restore original behavior)
+    // UNLESS Alt is held - then open context menu
     const handleRightClick = (e: React.MouseEvent) => {
         e.preventDefault();
         if (!device || device.status !== 'online') return;
 
-        // Import deviceService dynamically to avoid circular deps
+        // Alt+Right-click = Open context menu
+        if (e.altKey) {
+            e.stopPropagation();
+            const x = Math.min(e.clientX, window.innerWidth - 200);
+            const y = Math.min(e.clientY, window.innerHeight - 200);
+            setContextMenu({ x, y });
+            return;
+        }
+
+        // Normal right-click = Android Back button
         import('@/services/deviceService').then(({ deviceService }) => {
             deviceService.goBack(device.id);
         });
-    };
-
-    // Alt+Click = Open context menu
-    const handleAltClick = (e: React.MouseEvent) => {
-        if (!device) return;
-        if (!e.altKey) return false; // Not an alt+click
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        // Calculate position (keep inside viewport)
-        const x = Math.min(e.clientX, window.innerWidth - 200);
-        const y = Math.min(e.clientY, window.innerHeight - 200);
-        setContextMenu({ x, y });
-        return true; // Handled
     };
 
     return (
@@ -174,11 +169,7 @@ export const DeviceCard: React.FC<DeviceCardProps> = memo(({ device, slotIndex, 
                 onContextMenu={handleRightClick}
                 onMouseDown={handleMouseDownSelect}
                 onTouchStart={handleMouseDownSelect}
-                onClick={(e) => {
-                    // Alt+click opens context menu
-                    if (handleAltClick(e)) return;
-                    handleClickWrapper(e);
-                }}
+                onClick={handleClickWrapper}
                 style={{ touchAction: 'manipulation', userSelect: 'none' }}
                 className={cn(
                     'relative bg-gray-900 rounded-sm overflow-hidden border-2 transition-all group aspect-[9/16]',

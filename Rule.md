@@ -1,6 +1,17 @@
 # MONANDROID PROJECT RULES
 
-└── utils/       # Helpers
+## V. PROJECT STRUCTURE
+```
+frontend/
+└── src/
+    ├── components/  # React components
+    ├── services/    # API/device services
+    ├── store/       # Zustand state
+    └── utils/       # Helpers
+backend/
+├── adb/             # ADB client with WiFi deduplication
+├── service/         # Streaming, scrcpy, control
+└── models/          # Device models
 ```
 
 ## VI. UI & STYLING PROTOCOL
@@ -10,46 +21,60 @@
    - Global styles in `index.css`
 
 9. **Input Field Standards:**
-   - **No Spinners:** Hide via CSS:
-     ```css
-     input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
-     ```
+   - **No Spinners:** Hide via CSS
 
 10. **Dialog Standards:**
     - Use custom modals (no browser `alert()`, `confirm()`, `prompt()`)
-    - Use TailwindCSS for modal styling
 
 ## VII. UI INTERACTION STANDARDS
 
-11. **Mouse Interaction:**
-    - **Left-click:** Touch/swipe on device screen
-    - **Ctrl+Click:** Multi-select cards (toggle selection)
+11. **Mouse Interaction on DeviceCard:**
+    - **Left-click on screen:** Touch/swipe on device screen
+    - **Ctrl+Click anywhere:** Toggle card selection (multi-select)
+    - **Right-click on screen:** Android Back button
+    - **Alt+Right-click:** Open context menu (Thêm thẻ, Đổi slot, etc.)
     - **Ctrl+A:** Select All cards (disabled if device is expanded)
-    - **Right-click:** Go Back action (no touch)
-    - **Click/Touch on Card:** Instant selection (on mousedown/touchstart)
-    - **Click/Touch on Screen:** No selection (pass-through to device)
-    - **Drag on empty area:** Select multiple cards with box
 
-12. **Selection Visual:**
+12. **Sidebar Slot Buttons:**
+    - **Left-click:** Toggle device selection
+    - **Right-click:** Open context menu (same as Alt+right-click on card)
+
+13. **Selection Visual:**
     - **Hover:** Light blue border (`hover:border-blue-400/60`)
     - **Selected:** Blue border + shadow, no checkmarks
     - **Drag highlight:** Real-time blue border during drag
 
 ## VIII. STREAMING PROTOCOL
 
-13. **scrcpy 3.x Protocol:**
+14. **scrcpy 3.x Protocol:**
     - `scid`: 31-bit HEX (must be < 0x80000000)
     - `raw_stream=true`: Pure H.264 Annex-B
     - `control=true`: Enable keyboard/clipboard socket
 
-14. **H.264 Handling:**
+15. **WiFi Device Optimization:**
+    - Auto-detect WiFi by checking for ":" in device ID
+    - USB: 1.5Mbps, 720p
+    - WiFi: 800Kbps, 480p (reduced to prevent encoder crash)
+
+16. **Device Deduplication:**
+    - Same device connected via USB+WiFi: prefer WiFi, hide USB
+    - Based on hardware serial (`ro.serialno`)
+
+17. **H.264 Handling:**
     - Parse NAL units with 0x00000001 start codes
     - Cache SPS/PPS for decoder configuration
     - Use WebCodecs VideoDecoder
 
-## IX. AI REVIEW PACKAGING
+## IX. ERROR LOGGING
 
-15. **Automatic Packaging:**
+18. **Stream EOF Handling:**
+    - `io.EOF`: Log "Stream closed by remote device" - check WiFi/encoder
+    - Connection reset: Auto-retry after 200ms
+    - Other errors: Log and stop stream
+
+## X. AI REVIEW PACKAGING
+
+19. **Automatic Packaging:**
     - **Trigger:** When user requests "đóng gói file .zip"
     - **Output:** `AI_Review/AIreview_HH-MM-DD.zip`
     - **Include:** .go, .tsx, .ts, .json, .md files

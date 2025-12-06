@@ -156,7 +156,11 @@ func (s *StreamingService) StartStreaming(deviceID string) error {
 }
 
 // runStream manages the scrcpy streaming lifecycle for a device
+// Includes auto-reconnect on unexpected stream termination
 func (s *StreamingService) runStream(stream *deviceStream) {
+	const maxReconnectAttempts = 3
+	reconnectAttempt := 0
+
 	defer func() {
 		stream.mu.Lock()
 		log.Printf("🛑 [%s] Stream goroutine ending (state=%s)", stream.deviceID, stream.state)
@@ -170,45 +174,98 @@ func (s *StreamingService) runStream(stream *deviceStream) {
 		stream.mu.Unlock()
 	}()
 
-	// Start scrcpy and get the connection
-	stream.mu.Lock()
-	if stream.state != StateStarting {
-		log.Printf("⚠️ [%s] State changed during startup, aborting", stream.deviceID)
+	for reconnectAttempt <= maxReconnectAttempts {
+		// Start scrcpy and get the connection
+		stream.mu.Lock()
+		if stream.state != StateStarting && stream.state != StateRunning {
+			log.Printf("⚠️ [%s] State changed during startup, aborting", stream.deviceID)
+			stream.mu.Unlock()
+			return
+		}
+
+		// If reconnecting, recreate scrcpy client
+		if reconnectAttempt > 0 {
+			log.Printf("🔄 [%s] Reconnect attempt %d/%d", stream.deviceID, reconnectAttempt, maxReconnectAttempts)
+			if stream.scrcpyClient != nil {
+				stream.scrcpyClient.Stop()
+			}
+			adbClient := s.deviceManager.GetADBClient()
+			stream.scrcpyClient = NewScrcpyClient(adbClient, stream.deviceADBID)
+		}
+
+		scrcpyClient := stream.scrcpyClient
 		stream.mu.Unlock()
-		return
-	}
-	scrcpyClient := stream.scrcpyClient
-	stream.mu.Unlock()
 
-	conn, err := scrcpyClient.Start()
-	if err != nil {
-		log.Printf("❌ [%s] Failed to start scrcpy: %v", stream.deviceID, err)
-		return
-	}
+		conn, err := scrcpyClient.Start()
+		if err != nil {
+			log.Printf("❌ [%s] Failed to start scrcpy (attempt %d): %v", stream.deviceID, reconnectAttempt+1, err)
+			reconnectAttempt++
+			if reconnectAttempt <= maxReconnectAttempts {
+				// Exponential backoff: 2s, 4s, 8s
+				backoff := time.Duration(1<<reconnectAttempt) * time.Second
+				log.Printf("⏳ [%s] Waiting %v before retry...", stream.deviceID, backoff)
+				time.Sleep(backoff)
+				continue
+			}
+			return
+		}
 
-	// Transition to RUNNING
-	stream.mu.Lock()
-	if stream.state != StateStarting {
-		log.Printf("⚠️ [%s] State changed during scrcpy connect, aborting", stream.deviceID)
+		// Transition to RUNNING
+		stream.mu.Lock()
+		if stream.state != StateStarting && stream.state != StateRunning {
+			log.Printf("⚠️ [%s] State changed during scrcpy connect, aborting", stream.deviceID)
+			stream.mu.Unlock()
+			return
+		}
+		stream.state = StateRunning
+		ctx := stream.devCtx
+		log.Printf("✅ [%s] Stream now RUNNING (attempt %d)", stream.deviceID, reconnectAttempt+1)
 		stream.mu.Unlock()
-		return
+
+		// TCP optimizations
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetNoDelay(true)
+			tc.SetReadBuffer(1 << 20)
+			tc.SetWriteBuffer(1 << 20)
+		}
+
+		log.Printf("🎬 [%s] Started H.264 stream from scrcpy", stream.deviceID)
+
+		// Consume H.264 stream (blocks until stream ends or context cancelled)
+		streamStartTime := time.Now()
+		s.consumeH264(ctx, stream.deviceID, conn)
+		streamDuration := time.Since(streamStartTime)
+
+		// Check if stream was cancelled by user or stopped externally
+		stream.mu.Lock()
+		if stream.state == StateStopping || stream.state == StateStopped {
+			log.Printf("🛑 [%s] Stream stopped by user", stream.deviceID)
+			stream.mu.Unlock()
+			return
+		}
+		stream.mu.Unlock()
+
+		// If stream lasted less than 5 seconds, it's likely an encoder crash - retry
+		if streamDuration < 5*time.Second {
+			reconnectAttempt++
+			log.Printf("⚠️ [%s] Stream died after %v (attempt %d) - will retry",
+				stream.deviceID, streamDuration.Round(time.Millisecond), reconnectAttempt)
+			if reconnectAttempt <= maxReconnectAttempts {
+				backoff := time.Duration(1<<reconnectAttempt) * time.Second
+				log.Printf("⏳ [%s] Waiting %v before retry...", stream.deviceID, backoff)
+				time.Sleep(backoff)
+				continue
+			}
+		} else {
+			// Stream lasted a reasonable time, just reconnect without incrementing attempts
+			log.Printf("📺 [%s] Stream ended after %v, reconnecting...", stream.deviceID, streamDuration.Round(time.Second))
+			reconnectAttempt = 0 // Reset since it worked for a while
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
 	}
-	stream.state = StateRunning
-	ctx := stream.devCtx
-	log.Printf("✅ [%s] Stream now RUNNING", stream.deviceID)
-	stream.mu.Unlock()
 
-	// TCP optimizations
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
-		tc.SetReadBuffer(1 << 20)
-		tc.SetWriteBuffer(1 << 20)
-	}
-
-	log.Printf("🎬 [%s] Started H.264 stream from scrcpy", stream.deviceID)
-
-	// Consume H.264 stream (blocks until stream ends or context cancelled)
-	s.consumeH264(ctx, stream.deviceID, conn)
+	log.Printf("❌ [%s] Giving up after %d reconnect attempts", stream.deviceID, maxReconnectAttempts)
 }
 
 // StopStreaming stops streaming for a specific device (force stop)
@@ -430,7 +487,10 @@ func (s *StreamingService) consumeH264(ctx context.Context, deviceID string, r i
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
-			if err != io.EOF {
+			// Specific EOF logging for WiFi/encoder debugging
+			if err == io.EOF {
+				log.Printf("⚠️ [%s] Stream closed by remote device (EOF) - Check WiFi stability or device encoder", deviceID)
+			} else if !strings.Contains(errStr, "use of closed network connection") {
 				log.Printf("❌ [%s] Stream read error: %v", deviceID, err)
 			}
 			return
