@@ -85,11 +85,7 @@
         "services": {
             "api_client": "api",
             "websocket_service": "wsService",
-            "device_service": "deviceService",
-            "tile_stream_starter": "startTileStream"
-        },
-        "workers": {
-            "video_tile_worker": "video-tile.worker.ts"
+            "device_service": "deviceService"
         },
         "websocket_features": {
             "device_subs": "deviceSubs (Set<string>)",
@@ -111,10 +107,7 @@
             "is_drag_highlighted": "isDragHighlighted",
             "available_tags": "availableTags",
             "filter_tag": "filterTag",
-            "filter_untagged": "filterUntagged",
-            "worker_handle_ref": "workerHandleRef",
-            "stats_ref": "statsRef",
-            "is_visible_ref": "isVisibleRef"
+            "filter_untagged": "filterUntagged"
         },
         "types": {
             "device": "Device",

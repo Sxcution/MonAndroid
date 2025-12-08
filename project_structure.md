@@ -83,11 +83,10 @@ Multi-device Android control system with Go backend (ADB/H.264) and React fronte
 
 ### Components (`src/components/`)
 - `ScreenView.tsx`:
-  - **Worker Mode (default):** Uses `video-tile.worker.ts` for decode/render
-  - **Fallback Mode:** Main-thread VideoDecoder for browsers without OffscreenCanvas
-  - IntersectionObserver pauses/resumes Worker based on visibility
-  - Stats (FPS, latency) update via requestAnimationFrame, no React re-render
+  - WebCodecs `VideoDecoder` in Annex B mode
+  - Auto-detects codec from SPS, patches SPS to 4.2
   - Stitches `SPS+PPS+IDR` for keyframes
+  - Auto-resets decoder on error
   
 - `DeviceCard.tsx`:
   - **Selection:** 
@@ -129,10 +128,6 @@ Multi-device Android control system with Go backend (ADB/H.264) and React fronte
   - Singleton WebSocket manager
   - **Auto-Resubscribe:** Tracks `deviceSubs` Set, re-subscribes all on reconnect
   - **Message Queue:** Queues messages while disconnected, flushes on connect
-- `startTileStream.ts`:
-  - API for initializing Worker-based video stream
-  - `startTileStream(canvas, deviceId)` returns `TileStreamHandle`
-  - Handle provides: `pause()`, `resume()`, `terminate()`, `onStats()`
 - `deviceService.ts`: Device control API wrapper (tap, swipe, goBack, etc.)
 - `api.ts`: HTTP API client
 
@@ -141,14 +136,6 @@ Multi-device Android control system with Go backend (ADB/H.264) and React fronte
 
 ### Utils (`src/utils/`)
 - Utility functions
-
-### Workers (`src/workers/`)
-- `video-tile.worker.ts`:
-  - Offloads H.264 decoding to Web Worker
-  - **Backpressure:** Drops frames when queue > 3, waits for IDR
-  - **Watchdog:** Auto-resets decoder if no output for 800ms
-  - **Pause/Resume:** Controlled by IntersectionObserver
-  - WebSocket connection per device for stream data
 
 ---
 
