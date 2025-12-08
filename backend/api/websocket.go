@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,7 @@ type Client struct {
 	send       chan []byte // Buffered channel for binary frames
 	subscribed map[string]bool
 	ss         *service.StreamingService // Reference tới StreamingService để lấy cached headers
+	closed     atomic.Bool               // Cờ đóng an toàn - tránh race condition
 }
 
 type WebSocketHub struct {
@@ -62,12 +64,52 @@ func (h *WebSocketHub) Run() {
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				client.closed.Store(true) // Đánh dấu closed - KHÔNG close(client.send)
+				// Channel sẽ được GC thu gom
 			}
 			h.mu.Unlock()
 			log.Printf("Client disconnected (total: %d)", len(h.clients))
 		}
 	}
+}
+
+// trySend sends message with drop-oldest policy, safe for concurrent use
+func (c *Client) trySend(msg []byte) {
+	if c.closed.Load() {
+		return
+	}
+	select {
+	case c.send <- msg:
+		return
+	default:
+		// Channel full - drop oldest frame(s)
+		select {
+		case <-c.send: // Drop oldest
+			select {
+			case c.send <- msg:
+			default:
+			}
+		default:
+		}
+	}
+}
+
+// bundleAnnexB concatenates SPS+PPS+IDR into a single packet for reliable delivery
+func bundleAnnexB(sps, pps, idr []byte) []byte {
+	if sps == nil && pps == nil && idr == nil {
+		return nil
+	}
+	out := make([]byte, 0, len(sps)+len(pps)+len(idr))
+	if len(sps) > 0 {
+		out = append(out, sps...)
+	}
+	if len(pps) > 0 {
+		out = append(out, pps...)
+	}
+	if len(idr) > 0 {
+		out = append(out, idr...)
+	}
+	return out
 }
 
 // BroadcastToDevice sends message to clients subscribed to a specific device
@@ -98,19 +140,7 @@ func (h *WebSocketHub) BroadcastToDevice(deviceID string, message interface{}) {
 		// Send to clients subscribed to this device or subscribed to all
 		if client.subscribed[deviceID] || client.subscribed["all"] {
 			subscribedCount++
-			select {
-			case client.send <- messageBytes:
-			default:
-				// Real-time mode: drain old frames, keep only newest
-				for len(client.send) > 1 {
-					<-client.send
-				}
-				select {
-				case client.send <- messageBytes:
-				default:
-					// Still full, skip this frame
-				}
-			}
+			client.trySend(messageBytes) // Sử dụng trySend an toàn
 		}
 	}
 
@@ -133,11 +163,7 @@ func (h *WebSocketHub) BroadcastToAll(message interface{}) {
 	}
 
 	for client := range h.clients {
-		select {
-		case client.send <- messageBytes:
-		default:
-			log.Printf("⚠️ Client channel full, skipping")
-		}
+		client.trySend(messageBytes) // Sử dụng trySend an toàn
 	}
 }
 
@@ -155,9 +181,6 @@ func HandleWebSocket(hub *WebSocketHub, ss *service.StreamingService, c *gin.Con
 		subscribed: make(map[string]bool),
 		ss:         ss, // Gán service
 	}
-
-	// ❌ XÓA: Đừng auto subscribe tất cả nữa! Client chỉ nhận video của device nó subscribe
-	// client.subscribed["all"] = true
 
 	client.hub.register <- client
 
@@ -209,31 +232,12 @@ func (c *Client) readPump() {
 						if c.ss != nil {
 							c.ss.AddViewer(deviceID)
 
-							// Send cached SPS + PPS + lastIDR for instant decoder lock
+							// Bundle và gửi SPS+PPS+IDR trong 1 packet cho instant decode
 							sps, pps, idr := c.ss.GetStreamData(deviceID)
-							if sps != nil {
-								log.Printf("📤 Sending cached SPS to new subscriber for %s", deviceID)
-								select {
-								case c.send <- sps:
-								default:
-									log.Printf("⚠️ Failed to send cached SPS (channel full)")
-								}
-							}
-							if pps != nil {
-								log.Printf("📤 Sending cached PPS to new subscriber for %s", deviceID)
-								select {
-								case c.send <- pps:
-								default:
-									log.Printf("⚠️ Failed to send cached PPS (channel full)")
-								}
-							}
-							if idr != nil {
-								log.Printf("⚡ Sending cached IDR for instant decode on %s", deviceID)
-								select {
-								case c.send <- idr:
-								default:
-									log.Printf("⚠️ Failed to send cached IDR (channel full)")
-								}
+							bundle := bundleAnnexB(sps, pps, idr)
+							if bundle != nil {
+								log.Printf("📤 Sending bundled SPS+PPS+IDR (%d bytes) to new subscriber for %s", len(bundle), deviceID)
+								c.trySend(bundle)
 							}
 						}
 					}
@@ -296,25 +300,11 @@ func (c *Client) readPump() {
 						if deviceID == "" {
 							break
 						}
-						// Get cached SPS/PPS/IDR and send non-blocking
+						// Bundle SPS+PPS+IDR vào 1 packet
 						sps, pps, idr := c.ss.GetStreamData(deviceID)
-						if sps != nil {
-							select {
-							case c.send <- sps:
-							default:
-							}
-						}
-						if pps != nil {
-							select {
-							case c.send <- pps:
-							default:
-							}
-						}
-						if idr != nil {
-							select {
-							case c.send <- idr:
-							default:
-							}
+						bundle := bundleAnnexB(sps, pps, idr)
+						if bundle != nil {
+							c.trySend(bundle)
 						}
 					}
 				}
@@ -323,37 +313,52 @@ func (c *Client) readPump() {
 	}
 }
 
+// firstNonSpace returns the first non-whitespace byte
+func firstNonSpace(b []byte) byte {
+	for _, c := range b {
+		if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
+			return c
+		}
+	}
+	return 0
+}
+
+// isJSONPayload detects if payload is JSON (starts with { or [)
+func isJSONPayload(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	c := firstNonSpace(b)
+	return c == '{' || c == '['
+}
+
 // writePump handles outgoing messages to the client (H.264 frames + ping)
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
+		c.closed.Store(true) // Chốt cửa - không close(c.send) để GC thu gom
 	}()
 
 	for {
 		select {
 		case frame, ok := <-c.send:
-			if !ok {
+			if !ok || c.closed.Load() {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 
-			// Detect if this is binary (H.264 with length prefix) or JSON
-			isBinary := len(frame) > 4 && (frame[0] != '{' && frame[0] != '[')
+			// Detect Binary vs JSON using robust check
+			msgType := websocket.BinaryMessage
+			if isJSONPayload(frame) {
+				msgType = websocket.TextMessage
+			}
 
-			if isBinary {
-				// Send as BinaryMessage
-				if err := c.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-					return
-				}
-			} else {
-				// Send as TextMessage (JSON)
-				if err := c.conn.WriteMessage(websocket.TextMessage, frame); err != nil {
-					return
-				}
+			if err := c.conn.WriteMessage(msgType, frame); err != nil {
+				return
 			}
 
 		case <-ticker.C:
