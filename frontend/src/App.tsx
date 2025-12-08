@@ -157,7 +157,8 @@ function App() {
     const loadDevices = async () => {
         setIsScanning(true);
         try {
-            const deviceList = await api.device.scanDevices();
+            // Backend already scanned on startup, just fetch existing devices
+            const deviceList = await api.device.getDevices();
             setDevices(deviceList);
         } catch (error) {
             console.error('Failed to load devices:', error);
