@@ -288,6 +288,35 @@ func (c *Client) readPump() {
 							log.Printf("📋 Clipboard %s for %s (%d chars)", map[bool]string{true: "pasted", false: "set"}[paste], deviceID, len(text))
 						}
 					}
+
+				case "request-keyframe":
+					// Client requesting keyframe (e.g., after stall or decoder reset)
+					if c.ss != nil {
+						deviceID, _ := msg["device_id"].(string)
+						if deviceID == "" {
+							break
+						}
+						// Get cached SPS/PPS/IDR and send non-blocking
+						sps, pps, idr := c.ss.GetStreamData(deviceID)
+						if sps != nil {
+							select {
+							case c.send <- sps:
+							default:
+							}
+						}
+						if pps != nil {
+							select {
+							case c.send <- pps:
+							default:
+							}
+						}
+						if idr != nil {
+							select {
+							case c.send <- idr:
+							default:
+							}
+						}
+					}
 				}
 			}
 		}

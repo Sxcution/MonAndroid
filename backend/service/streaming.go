@@ -567,7 +567,7 @@ func (s *StreamingService) broadcastNAL(deviceID string, nalData []byte, frameCo
 
 	if *frameCount == 1 {
 		log.Printf("🎞️ [%s] First NAL received (%d bytes)", deviceID, len(nalData))
-	} else if *frameCount%1000 == 0 {
+	} else if *frameCount%5000 == 0 {
 		log.Printf("📹 [%s] Streaming: %d NALs sent", deviceID, *frameCount)
 	}
 

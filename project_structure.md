@@ -130,6 +130,17 @@ Multi-device Android control system with Go backend (ADB/H.264) and React fronte
   - **Message Queue:** Queues messages while disconnected, flushes on connect
 - `deviceService.ts`: Device control API wrapper (tap, swipe, goBack, etc.)
 - `api.ts`: HTTP API client
+- `startTileStream.ts`: 
+  - Factory for creating video tile workers
+  - Manages canvas→worker mapping via WeakMap
+  - Auto-broadcasts `visibilitychange` to all workers
+
+### Workers (`src/workers/`)
+- `video-tile.worker.ts`:
+  - **Watchdog:** Requests keyframe at 800ms stall, hard resets at 2000ms
+  - **Throttle:** Limits keyframe requests to 1/second per device
+  - **Drop Policy:** Skips P/B frames when queue >2
+  - Handles WebSocket connection and VideoDecoder lifecycle
 
 ### Types (`src/types/`)
 - TypeScript interfaces for Device, Action, API responses

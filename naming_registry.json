@@ -85,7 +85,9 @@
         "services": {
             "api_client": "api",
             "websocket_service": "wsService",
-            "device_service": "deviceService"
+            "device_service": "deviceService",
+            "tile_stream_service": "startTileStream",
+            "video_tile_worker": "video-tile.worker"
         },
         "websocket_features": {
             "device_subs": "deviceSubs (Set<string>)",

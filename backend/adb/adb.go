@@ -31,8 +31,9 @@ func (c *ADBClient) ListDevices() ([]models.Device, error) {
 		return nil, fmt.Errorf("failed to list devices: %w", err)
 	}
 
-	fmt.Println("📱 ADB Output:")
-	fmt.Println(string(output))
+	// Debug: ADB raw output (disabled to reduce log spam)
+	// fmt.Println("📱 ADB Output:")
+	// fmt.Println(string(output))
 
 	devices, err := c.parseDeviceList(string(output))
 	if err != nil {
@@ -83,13 +84,10 @@ func (c *ADBClient) deduplicateDevices(devices []models.Device) []models.Device 
 
 			if currentIsWiFi && !existingIsWiFi {
 				// Current is WiFi, existing is USB - replace with WiFi
-				fmt.Printf("🔄 Dedup: Preferring WiFi %s over USB %s (same device: %s)\n",
-					devices[i].ADBDeviceID, existing.ADBDeviceID, hwSerial)
+				// Dedup: prefer WiFi over USB
 				serialToDevice[hwSerial] = devices[i]
 			} else if !currentIsWiFi && existingIsWiFi {
-				// Current is USB, existing is WiFi - keep WiFi
-				fmt.Printf("🔄 Dedup: Keeping WiFi %s over USB %s (same device: %s)\n",
-					existing.ADBDeviceID, devices[i].ADBDeviceID, hwSerial)
+				// Current is USB, existing is WiFi - keep WiFi (no-op)
 			}
 			// If both are same type, keep the first one
 		}
@@ -101,7 +99,10 @@ func (c *ADBClient) deduplicateDevices(devices []models.Device) []models.Device 
 		result = append(result, device)
 	}
 
-	fmt.Printf("📊 Dedup result: %d devices (from %d raw)\n", len(result), len(devices))
+	// Only log if deduplication actually happened
+	if len(result) != len(devices) {
+		fmt.Printf("📊 Dedup: %d devices (from %d raw)\n", len(result), len(devices))
+	}
 	return result
 }
 
