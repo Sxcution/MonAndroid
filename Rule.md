@@ -98,15 +98,26 @@ backend/
     - Connection reset: Auto-retry after 200ms
     - Other errors: Log and stop stream
 
-## X. AI REVIEW PACKAGING
-18. **Automatic Packaging:**
+## X. WEBSOCKET HUB PATTERNS
+18. **Race-Safe Client Management:**
+    - Use `atomic.Bool closed` flag instead of `close(channel)` to prevent panic
+    - Use `trySend()` method with drop-oldest policy for non-blocking sends
+    - Bundle SPS+PPS+IDR into single packet via `bundleNALsWithPrefix()`
+    - Check `closed.Load()` before sending to prevent send-on-closed
+
+19. **Message Detection:**
+    - Use `firstNonSpace()` + `isJSONPayload()` for robust binary/JSON detection
+    - Do NOT rely on first byte alone (may have whitespace)
+
+## XI. AI REVIEW PACKAGING
+20. **Automatic Packaging:**
     - **Trigger:** "đóng gói file .zip"
     - **Output:** `AI_Review/AIreview_HH-MM-DD.zip`
     - **Include:** .go, .tsx, .ts, .json, .md files
     - **Exclude:** node_modules, .git, dist, binary files
 
-## XI. RULE COMMAND PROTOCOL
-19. **Rule Trigger Command:**
+## XII. RULE COMMAND PROTOCOL
+21. **Rule Trigger Command:**
     - **Trigger:** When user says "Rule", "/Rule", or "đọc Rule"
     - **Immediate Action:** 
       1. READ and ACKNOWLEDGE this `Rule.md` file
@@ -114,7 +125,7 @@ backend/
       3. READ `naming_registry.json` to load existing variable names
     - **Compliance:** STRICTLY follow all rules for the entire session
 
-20. **Post-Coding Documentation Update:**
+22. **Post-Coding Documentation Update:**
     - **Trigger:** After completing ANY coding task that adds new features/elements
     - **Mandatory Updates:**
       1. `project_structure.md`: Add new files, update descriptions

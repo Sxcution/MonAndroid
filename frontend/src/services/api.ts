@@ -7,7 +7,7 @@ import { APIResponse } from '@/types/api';
 // Create axios instance with base configuration
 const apiClient = axios.create({
     baseURL: API_BASE_URL,
-    timeout: 30000, // 30 seconds - ADB scan can take 7-13s for many devices
+    timeout: 60000, // 60 seconds - Large device scans (40+) can take 25-30s
     headers: {
         'Content-Type': 'application/json',
     },

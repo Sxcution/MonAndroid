@@ -94,22 +94,24 @@ func (c *Client) trySend(msg []byte) {
 	}
 }
 
-// bundleAnnexB concatenates SPS+PPS+IDR into a single packet for reliable delivery
-func bundleAnnexB(sps, pps, idr []byte) []byte {
-	if sps == nil && pps == nil && idr == nil {
-		return nil
+// drainAndSend clears all pending frames then sends the message
+// Used for critical data like SPS/PPS/IDR on subscribe to ensure delivery
+func (c *Client) drainAndSend(msg []byte) {
+	if c.closed.Load() {
+		return
 	}
-	out := make([]byte, 0, len(sps)+len(pps)+len(idr))
-	if len(sps) > 0 {
-		out = append(out, sps...)
+	// Drain old frames (they're stale for a new subscriber anyway)
+	for len(c.send) > 0 {
+		select {
+		case <-c.send:
+		default:
+		}
 	}
-	if len(pps) > 0 {
-		out = append(out, pps...)
+	// Send critical data
+	select {
+	case c.send <- msg:
+	default:
 	}
-	if len(idr) > 0 {
-		out = append(out, idr...)
-	}
-	return out
 }
 
 // BroadcastToDevice sends message to clients subscribed to a specific device
@@ -232,12 +234,17 @@ func (c *Client) readPump() {
 						if c.ss != nil {
 							c.ss.AddViewer(deviceID)
 
-							// Bundle và gửi SPS+PPS+IDR trong 1 packet cho instant decode
+							// Send cached SPS + PPS + IDR separately (frontend expects 1 NAL per message)
 							sps, pps, idr := c.ss.GetStreamData(deviceID)
-							bundle := bundleAnnexB(sps, pps, idr)
-							if bundle != nil {
-								log.Printf("📤 Sending bundled SPS+PPS+IDR (%d bytes) to new subscriber for %s", len(bundle), deviceID)
-								c.trySend(bundle)
+							if sps != nil {
+								c.drainAndSend(sps) // Drain old frames, send SPS
+							}
+							if pps != nil {
+								c.trySend(pps)
+							}
+							if idr != nil {
+								log.Printf("⚡ Sending cached SPS+PPS+IDR to new subscriber for %s", deviceID)
+								c.trySend(idr)
 							}
 						}
 					}
@@ -300,11 +307,16 @@ func (c *Client) readPump() {
 						if deviceID == "" {
 							break
 						}
-						// Bundle SPS+PPS+IDR vào 1 packet
+						// Send SPS+PPS+IDR as separate packets
 						sps, pps, idr := c.ss.GetStreamData(deviceID)
-						bundle := bundleAnnexB(sps, pps, idr)
-						if bundle != nil {
-							c.trySend(bundle)
+						if sps != nil {
+							c.drainAndSend(sps) // Drain old frames, send SPS
+						}
+						if pps != nil {
+							c.trySend(pps)
+						}
+						if idr != nil {
+							c.trySend(idr)
 						}
 					}
 				}
