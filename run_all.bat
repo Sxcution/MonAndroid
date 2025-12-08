@@ -13,13 +13,13 @@ echo Waiting for processes to terminate...
 timeout /t 2 /nobreak >nul
 
 echo Starting Backend...
-if exist "C:\Users\Mon\Desktop\MonAndroid\backend\.air.toml" (
-    start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\backend && air -c .air.toml"
+if exist "C:\Users\Mon\Desktop\Protect\Mon ViewPhone\backend\.air.toml" (
+    start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\Protect\Mon ViewPhone\backend && air -c .air.toml"
 ) else (
-    start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\backend && go run ./..."
+    start "Backend" cmd /k "cd /d C:\Users\Mon\Desktop\Protect\Mon ViewPhone\backend && go run ./..."
 )
 
 echo Starting Frontend...
-start "Frontend" cmd /k "cd /d C:\Users\Mon\Desktop\MonAndroid\frontend && npm run dev"
+start "Frontend" cmd /k "cd /d C:\Users\Mon\Desktop\Protect\Mon ViewPhone\frontend && npm run dev"
 
 exit

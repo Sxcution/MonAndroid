@@ -85,7 +85,17 @@
         "services": {
             "api_client": "api",
             "websocket_service": "wsService",
-            "device_service": "deviceService"
+            "device_service": "deviceService",
+            "tile_stream_starter": "startTileStream"
+        },
+        "workers": {
+            "video_tile_worker": "video-tile.worker.ts"
+        },
+        "websocket_features": {
+            "device_subs": "deviceSubs (Set<string>)",
+            "subscribe_device": "subscribeDevice(deviceId)",
+            "unsubscribe_device": "unsubscribeDevice(deviceId)",
+            "auto_resubscribe": "on WebSocket reconnect"
         },
         "store": {
             "app_store": "useAppStore",
@@ -101,7 +111,10 @@
             "is_drag_highlighted": "isDragHighlighted",
             "available_tags": "availableTags",
             "filter_tag": "filterTag",
-            "filter_untagged": "filterUntagged"
+            "filter_untagged": "filterUntagged",
+            "worker_handle_ref": "workerHandleRef",
+            "stats_ref": "statsRef",
+            "is_visible_ref": "isVisibleRef"
         },
         "types": {
             "device": "Device",

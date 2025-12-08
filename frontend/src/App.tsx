@@ -25,6 +25,22 @@ import { EditTagModal } from './components/EditTagModal';
 import { DeviceContextMenu } from './components/DeviceContextMenu';
 import { Device } from './types/device';
 
+// PerformanceObserver for Long Tasks - helps detect UI thread saturation
+// Other components can listen for 'ui-longtask' event to reduce load
+if (typeof PerformanceObserver !== 'undefined') {
+    try {
+        new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                if (entry.duration > 80) {
+                    window.dispatchEvent(new CustomEvent('ui-longtask', { detail: entry.duration }));
+                }
+            }
+        }).observe({ entryTypes: ['longtask'] });
+    } catch (e) {
+        // PerformanceObserver for 'longtask' may not be supported in all browsers
+    }
+}
+
 function App() {
     const {
         devices,
